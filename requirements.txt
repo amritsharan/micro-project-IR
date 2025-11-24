@@ -1,0 +1,6 @@
+Flask
+scikit-learn
+rank-bm25
+python-docx
+PyPDF2
+fpdf2
