@@ -85,6 +85,25 @@ def normalize_for_index(text):
     text = text.lower()
     return text.translate(str.maketrans("", "", string.punctuation))
 
+# English stopwords for filtering
+ENGLISH_STOPWORDS = {
+    'a', 'about', 'above', 'after', 'again', 'against', 'all', 'am', 'an', 'and', 'any', 'are', 
+    'as', 'at', 'be', 'because', 'been', 'before', 'being', 'below', 'between', 'both', 'but', 
+    'by', 'can', 'could', 'did', 'do', 'does', 'doing', 'down', 'during', 'each', 'few', 'for', 
+    'from', 'further', 'had', 'has', 'have', 'having', 'he', 'her', 'here', 'hers', 'herself', 
+    'him', 'himself', 'his', 'how', 'i', 'if', 'in', 'into', 'is', 'it', 'its', 'itself', 'just', 
+    'me', 'might', 'more', 'most', 'my', 'myself', 'no', 'nor', 'not', 'of', 'off', 'on', 'once', 
+    'only', 'or', 'other', 'our', 'ours', 'ourselves', 'out', 'over', 'own', 'same', 'so', 'some', 
+    'such', 'than', 'that', 'the', 'their', 'theirs', 'them', 'themselves', 'then', 'there', 
+    'these', 'they', 'this', 'those', 'to', 'too', 'under', 'until', 'up', 'very', 'was', 'we', 
+    'were', 'what', 'when', 'where', 'which', 'while', 'who', 'whom', 'why', 'will', 'with', 'you', 
+    'your', 'yours', 'yourself', 'yourselves'
+}
+
+def filter_stopwords(tokens):
+    """Remove stopwords from token list"""
+    return [t for t in tokens if t and t not in ENGLISH_STOPWORDS]
+
 # ----------------------------
 # Load documents
 # ----------------------------
@@ -173,13 +192,22 @@ class IREngine:
     def search(self, query, method="tfidf", top_k=10):
         query_plain = preprocess(query)
         query_norm = normalize_for_index(query_plain)
-        q_tokens = [t for t in query_norm.split() if t]
+        # Get raw tokens
+        raw_tokens = [t for t in query_norm.split() if t]
+        # Filter stopwords for better relevance
+        q_tokens = filter_stopwords(raw_tokens)
+        
+        # If all tokens were stopwords, use raw tokens as fallback
+        if not q_tokens:
+            q_tokens = raw_tokens
+        
         results = []
         if method.lower() == "bm25" and self.bm25:
             scores = self.bm25.score(q_tokens)
             ranked = np.argsort(scores)[::-1]
             for idx in ranked[:top_k]:
-                results.append((idx, float(scores[idx])))
+                if scores[idx] > 0:  # Only include results with non-zero scores
+                    results.append((idx, float(scores[idx])))
         else:
             if self.doc_vectors is None:
                 return []
@@ -191,13 +219,16 @@ class IREngine:
                     scores = self.bm25.score(q_tokens)
                     ranked = np.argsort(scores)[::-1]
                     for idx in ranked[:top_k]:
-                        results.append((idx, float(scores[idx])))
+                        if scores[idx] > 0:
+                            results.append((idx, float(scores[idx])))
                 else:
                     return []
             else:
                 ranked = np.argsort(sims)[::-1]
                 for idx in ranked[:top_k]:
-                    results.append((idx, float(sims[idx])))
+                    if sims[idx] > 0:  # Only include results with non-zero scores
+                        results.append((idx, float(sims[idx])))
+        
         enriched = []
         for idx, score in results:
             snippet = extract_snippet(self.docs_raw[idx], q_tokens)
@@ -496,152 +527,821 @@ BASE_HTML = r"""
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>DocVista — Smart IR</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+<title>DocVista — Smart IR Engine</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
-:root{
-  --bg:#f4f6f9; --card:#ffffff; --muted:#6b7280; --accent:#0f62fe; --accent-2:#0066cc;
+* {margin:0;padding:0;box-sizing:border-box;}
+:root {
+  --primary: #3956ff;
+  --primary-dark: #1e3a8a;
+  --secondary: #f59e0b;
+  --success: #10b981;
+  --danger: #ef4444;
+  --light-bg: #f8fafc;
+  --card-bg: #ffffff;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --border-color: #e2e8f0;
+  --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.12);
+  --shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.15);
 }
-body{font-family:Inter,system-ui,Arial,Helvetica,sans-serif;background:var(--bg); color:#0b1724; padding:24px;}
-.container{max-width:1200px;margin:0 auto;}
-.header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px;}
-.brand{display:flex;gap:12px;align-items:center;}
-.logo{width:46px;height:46px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:flex;align-items:center;justify-content:center;color:white;font-weight:700;}
-.card{background:var(--card);border-radius:12px;padding:18px;box-shadow:0 6px 18px rgba(15,22,40,0.06);}
-.search-row{display:flex;gap:12px;align-items:center;}
-.input-large{flex:1;}
-.meta{color:var(--muted);font-size:0.9rem;}
-.upload-box{margin-top:12px;}
-.results{margin-top:18px;}
-.result-card{border-radius:10px;padding:14px;margin-bottom:12px;background:linear-gradient(180deg,#fff,#fbfdff);box-shadow:0 3px 10px rgba(12,20,40,0.04);display:flex;justify-content:space-between;gap:12px;}
-.result-left{flex:1;}
-.result-right{text-align:right;min-width:220px;}
-.snippet{color:#0b1724;margin-top:8px;}
-.kws{margin-top:8px;color:var(--muted);font-size:0.9rem;}
-.footer{margin-top:18px;color:var(--muted);font-size:0.9rem;text-align:center;}
-.small-btn{padding:6px 10px;font-size:0.9rem;border-radius:8px;}
-.progress-bar{height:8px;background:#eef2ff;border-radius:8px;overflow:hidden;}
-.progress{height:100%;background:linear-gradient(90deg,#4caf50,#2ea44f);width:0;transition:width 0.9s;}
-/* responsive tweaks */
-@media (max-width:800px){
-  .result-right{min-width:120px;text-align:left;}
-  .search-row{flex-direction:column;align-items:stretch;}
+
+[data-theme="dark"] {
+  --light-bg: #0f172a;
+  --card-bg: #1e293b;
+  --text-primary: #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --border-color: #334155;
 }
+
+html, body {
+  background: var(--light-bg);
+  color: var(--text-primary);
+  transition: background-color 0.3s ease, color 0.3s ease;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+  line-height: 1.6;
+}
+
+body { padding: 24px 16px; }
+
+.container-main {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* ===== HEADER ===== */
+.navbar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 32px;
+  gap: 24px;
+}
+
+.navbar-brand-section {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+}
+
+.logo-badge {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: 800;
+  font-size: 24px;
+  box-shadow: var(--shadow-md);
+  transition: transform 0.3s ease;
+}
+
+.logo-badge:hover {
+  transform: translateY(-4px);
+}
+
+.brand-info h1 {
+  font-size: 28px;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.5px;
+}
+
+.brand-info p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 4px 0 0;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.navbar-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.theme-toggle {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.theme-toggle:hover {
+  background: var(--light-bg);
+  border-color: var(--primary);
+}
+
+.btn-sm-header {
+  padding: 8px 14px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-decoration: none;
+}
+
+.btn-sm-header:hover {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+}
+
+/* ===== SEARCH CARD ===== */
+.search-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 32px;
+  box-shadow: var(--shadow-md);
+  margin-bottom: 32px;
+  transition: all 0.3s ease;
+}
+
+.search-card:hover {
+  box-shadow: var(--shadow-lg);
+}
+
+.search-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 20px;
+  color: var(--text-primary);
+}
+
+.search-form {
+  display: grid;
+  grid-template-columns: 1fr auto 100px 140px;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.form-input {
+  background: var(--light-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 15px;
+  color: var(--text-primary);
+  transition: all 0.3s ease;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(57, 86, 255, 0.1);
+}
+
+.form-select {
+  background: var(--light-bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233956ff' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E") right 10px center;
+  background-repeat: no-repeat;
+  background-size: 20px;
+  padding-right: 36px;
+  appearance: none;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.btn-search {
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  color: white;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 24px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-search:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(57, 86, 255, 0.3);
+}
+
+.upload-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.file-input-wrapper {
+  position: relative;
+  flex: 1;
+}
+
+.file-input-wrapper input {
+  opacity: 0;
+  position: absolute;
+  width: 100%;
+}
+
+.file-input-label {
+  background: var(--light-bg);
+  border: 2px dashed var(--border-color);
+  border-radius: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-input-label:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.btn-upload {
+  background: var(--success);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.btn-upload:hover {
+  opacity: 0.9;
+  transform: translateY(-2px);
+}
+
+.upload-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 12px;
+  padding: 8px;
+  background: var(--light-bg);
+  border-left: 3px solid var(--primary);
+  border-radius: 4px;
+}
+
+.upload-hint code {
+  background: var(--card-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+/* ===== RESULTS SECTION ===== */
+.results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  gap: 16px;
+}
+
+.results-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.query-badge {
+  background: linear-gradient(135deg, rgba(57, 86, 255, 0.1), rgba(30, 58, 138, 0.05));
+  border: 1px solid rgba(57, 86, 255, 0.2);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.query-badge strong {
+  color: var(--primary);
+}
+
+.doc-count {
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--light-bg);
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+
+.btn-export-main {
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.btn-export-main:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(57, 86, 255, 0.3);
+}
+
+/* ===== RESULT CARD ===== */
+.result-item {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 20px;
+  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: 1fr 240px;
+  gap: 24px;
+  transition: all 0.3s ease;
+  animation: slideIn 0.4s ease forwards;
+  opacity: 0;
+}
+
+.result-item:nth-child(1) { animation-delay: 0.05s; }
+.result-item:nth-child(2) { animation-delay: 0.1s; }
+.result-item:nth-child(3) { animation-delay: 0.15s; }
+.result-item:nth-child(4) { animation-delay: 0.2s; }
+.result-item:nth-child(5) { animation-delay: 0.25s; }
+.result-item:nth-child(n+6) { animation-delay: 0.3s; }
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.result-item:hover {
+  border-color: var(--primary);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-2px);
+}
+
+.result-content h3 {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.result-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.meta-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.score-badge {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(5, 150, 105, 0.05));
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-weight: 600;
+  color: var(--success);
+}
+
+.snippet {
+  color: var(--text-primary);
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--light-bg);
+  border-left: 3px solid var(--primary);
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+  max-height: 80px;
+  overflow: hidden;
+}
+
+.snippet mark {
+  background: linear-gradient(120deg, rgba(245, 158, 11, 0.4), rgba(245, 158, 11, 0.2));
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.keywords-section {
+  margin-top: 12px;
+}
+
+.view-kws-btn {
+  color: var(--primary);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.3s ease;
+}
+
+.view-kws-btn:hover {
+  gap: 8px;
+}
+
+.keywords-box {
+  margin-top: 8px;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(57, 86, 255, 0.05), rgba(30, 58, 138, 0.03));
+  border: 1px solid rgba(57, 86, 255, 0.1);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.keyword-item {
+  display: inline-block;
+  background: var(--card-bg);
+  padding: 4px 10px;
+  border-radius: 6px;
+  margin: 4px 4px 4px 0;
+  border: 1px solid var(--border-color);
+  color: var(--primary);
+  font-weight: 500;
+}
+
+/* Result Actions */
+.result-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  justify-content: flex-start;
+}
+
+.btn-action {
+  padding: 10px 14px;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-decoration: none;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.btn-action:hover {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+  transform: translateY(-2px);
+}
+
+.btn-action.highlight {
+  background: linear-gradient(135deg, var(--secondary), #d97706);
+  color: white;
+  border: none;
+}
+
+.btn-action.highlight:hover {
+  opacity: 0.9;
+  transform: translateY(-2px);
+}
+
+.progress-container {
+  margin-top: 16px;
+}
+
+.progress-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--light-bg);
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary), var(--secondary));
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+
+@media (max-width: 768px) {
+  .search-form {
+    grid-template-columns: 1fr;
+  }
+  .result-item {
+    grid-template-columns: 1fr;
+  }
+  .navbar-top {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .results-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .results-meta {
+    flex-direction: column;
+  }
+}
+
+/* ===== FOOTER ===== */
+.footer {
+  margin-top: 48px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+  border-top: 1px solid var(--border-color);
+}
+
+.footer strong {
+  color: var(--text-primary);
+}
+
+/* ===== NO RESULTS ===== */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-secondary);
+}
+
+.empty-state-icon {
+  font-size: 56px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.empty-state h3 {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+}
+
+.empty-state p {
+  font-size: 14px;
+  margin: 0;
+}
+
 </style>
 </head>
 <body>
-<div class="container">
-  <div class="header">
-    <div class="brand">
-      <div class="logo">DV</div>
-      <div>
-        <h3 style="margin:0">DocVista</h3>
-        <div class="meta">Material · Professional · Export & Highlight</div>
+
+<div class="container-main">
+  <!-- HEADER -->
+  <div class="navbar-top">
+    <div class="navbar-brand-section">
+      <div class="logo-badge">📚</div>
+      <div class="brand-info">
+        <h1>DocVista</h1>
+        <p>Intelligent Document Search Engine</p>
       </div>
     </div>
-    <div style="text-align:right">
-      <a class="btn btn-outline-secondary btn-sm" href="/bm25">BM25 Info</a>
-      <a class="btn btn-outline-secondary btn-sm" href="/refresh">Reload</a>
+    <div class="navbar-actions">
+      <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">🌙</button>
+      <a class="btn-sm-header" href="/bm25" title="Learn about BM25 algorithm">ℹ️ BM25 Info</a>
+      <a class="btn-sm-header" href="/refresh" title="Reload documents">🔄 Reload</a>
     </div>
   </div>
 
-  <div class="card">
-    <form id="searchForm" method="POST" action="/" enctype="multipart/form-data" class="row g-2 align-items-center">
-      <div class="col-12 col-md-7">
-        <input id="queryInput" name="query" class="form-control form-control-lg input-large" placeholder="Search your documents — try 'deadlock' or 'cpu scheduling'" required />
-      </div>
-      <div class="col-12 col-md-2">
-        <select name="method" class="form-select form-select-lg">
+  <!-- SEARCH CARD -->
+  <div class="search-card">
+    <div class="search-title">🔎 Search Documents</div>
+    <form id="searchForm" method="POST" action="/" enctype="multipart/form-data">
+      <div class="search-form">
+        <input 
+          type="text" 
+          id="queryInput" 
+          name="query" 
+          class="form-input" 
+          placeholder="Search your documents — try 'deadlock', 'cpu', or any keyword..." 
+          required 
+        />
+        <select name="method" class="form-select" title="Choose ranking algorithm">
           <option value="tfidf">TF–IDF</option>
           <option value="bm25">BM25</option>
         </select>
+        <button type="submit" class="btn-search">
+          <i class="fas fa-search"></i> Search
+        </button>
+        <div class="upload-row">
+          <div class="file-input-wrapper">
+            <input type="file" name="file" accept=".pdf,.docx,.txt" id="fileInput" />
+            <label for="fileInput" class="file-input-label">
+              <i class="fas fa-upload"></i> Choose file
+            </label>
+          </div>
+          <button type="submit" name="upload" value="1" class="btn-upload" title="Upload new document">
+            <i class="fas fa-arrow-up"></i>
+          </button>
+        </div>
       </div>
-      <div class="col-6 col-md-1">
-        <button class="btn btn-primary btn-lg w-100">Search</button>
-      </div>
-      <div class="col-6 col-md-2 d-flex gap-2">
-        <input type="file" name="file" accept=".pdf,.docx,.txt" class="form-control form-control-sm" />
-        <button name="upload" value="1" class="btn btn-success">Upload</button>
+      <div class="upload-hint">
+        <i class="fas fa-info-circle"></i> Supported formats: PDF, DOCX, TXT • Or drop files in <code>/documents</code> folder
       </div>
     </form>
-
-    <div class="upload-box meta">Upload supported: PDF · DOCX · TXT • Or drop files in <code>/documents</code></div>
   </div>
 
+  <!-- RESULTS -->
   {% if results %}
-  <div class="results">
-    <div class="d-flex justify-content-between align-items-center mb-2">
-      <div><strong>Query:</strong> "{{ query }}" • <span class="meta">Documents: {{ n_docs }}</span></div>
-      <div>
-        <form method="POST" action="/export" style="display:inline;">
-          <input type="hidden" name="query" value="{{ query }}">
-          <input type="hidden" name="method" value="{{ method }}">
-          <button class="btn btn-outline-primary small-btn">📥 Download Full Report</button>
-        </form>
+  <div class="results-header">
+    <div class="results-meta">
+      <div class="query-badge">
+        <i class="fas fa-quote-left"></i> <strong>{{ query }}</strong>
+      </div>
+      <div class="doc-count">
+        <i class="fas fa-file"></i> {{ n_docs }} documents indexed
       </div>
     </div>
+    <form method="POST" action="/export">
+      <input type="hidden" name="query" value="{{ query }}">
+      <input type="hidden" name="method" value="{{ method }}">
+      <button type="submit" class="btn-export-main">
+        <i class="fas fa-download"></i> Download Full Report
+      </button>
+    </form>
+  </div>
 
-    {% for r in results %}
-    <div class="result-card">
-      <div class="result-left">
-        <h5 style="margin:0">{{ r.name }}</h5>
-        <div class="meta">Score: {{ r.score }} • {{ (r.score * 100)|round(0) }}%</div>
-        <div class="snippet">{{ r.snippet | safe }}</div>
-        <div class="kws">
-          <a href="#" class="view-kws" data-idx="{{ r.index }}">🔍 View TF–IDF keywords</a>
-          <div id="kws-{{ r.index }}" style="display:none;margin-top:8px;"></div>
+  {% for r in results %}
+  <div class="result-item">
+    <div class="result-content">
+      <h3><i class="fas fa-file-text"></i> {{ r.name }}</h3>
+      <div class="result-meta">
+        <div class="meta-item">
+          <span class="score-badge">{{ r.score }} • {{ (r.score * 100)|round(0) }}%</span>
+        </div>
+        <div class="meta-item">
+          <i class="fas fa-layer-group"></i> 
+          <span>{{ method | upper }}</span>
         </div>
       </div>
-      <div class="result-right">
-        <div class="mb-2">
-          <a class="btn btn-outline-secondary btn-sm" href="/download/{{ r.index }}">Download</a>
-          {% if r.name.lower().endswith('.pdf') %}
-          <a class="btn btn-warning btn-sm" href="/highlight/{{ r.index }}/{{ query | urlencode }}/{{ method }}">✨ Highlight & Download</a>
-          {% endif %}
-        </div>
-        <div style="margin-top:10px">
-          <div class="progress-bar">
-            <div class="progress" style="width: {{ (r.score * 100)|round(0) }}%"></div>
-          </div>
-        </div>
-        <div class="meta" style="margin-top:8px">
-          <form method="POST" action="/export" style="display:inline;">
-            <input type="hidden" name="query" value="{{ query }}">
-            <input type="hidden" name="method" value="{{ method }}">
-            <input type="hidden" name="single" value="{{ r.index }}">
-            <button class="btn btn-primary btn-sm">📄 Export This</button>
-          </form>
+      <div class="snippet">{{ r.snippet | safe }}</div>
+      <div class="keywords-section">
+        <a href="#" class="view-kws-btn" data-idx="{{ r.index }}">
+          <i class="fas fa-tags"></i> View Top Keywords
+        </a>
+        <div id="kws-{{ r.index }}" class="keywords-box" style="display:none;"></div>
+      </div>
+    </div>
+    <div class="result-actions">
+      <a class="btn-action" href="/download/{{ r.index }}" title="Download raw document">
+        <i class="fas fa-download"></i> Download
+      </a>
+      {% if r.name.lower().endswith('.pdf') %}
+      <a class="btn-action highlight" href="/highlight/{{ r.index }}/{{ query | urlencode }}/{{ method }}" title="Download with highlighted terms">
+        <i class="fas fa-highlighter"></i> Highlight PDF
+      </a>
+      {% endif %}
+      <form method="POST" action="/export" style="display:contents;">
+        <input type="hidden" name="query" value="{{ query }}">
+        <input type="hidden" name="method" value="{{ method }}">
+        <input type="hidden" name="single" value="{{ r.index }}">
+        <button type="submit" class="btn-action" title="Export this document as PDF report">
+          <i class="fas fa-file-pdf"></i> Export Report
+        </button>
+      </form>
+      <div class="progress-container">
+        <div class="progress-label">Relevance</div>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: {{ (r.score * 100)|round(0) }}%"></div>
         </div>
       </div>
     </div>
-    {% endfor %}
+  </div>
+  {% endfor %}
+
+  {% else %}
+  {% if request.method == 'POST' %}
+  <div class="empty-state">
+    <div class="empty-state-icon">🔍</div>
+    <h3>No results found</h3>
+    <p>Try different search terms or upload more documents</p>
   </div>
   {% endif %}
+  {% endif %}
 
-  <div class="footer">DocVista · Built for IR projects — TF–IDF, BM25, export, highlight.</div>
+  <!-- FOOTER -->
+  <div class="footer">
+    <strong>DocVista</strong> · Professional Information Retrieval Engine
+    <br>
+    Powered by TF–IDF & BM25 · Export & Highlight PDFs · Built for IR Projects
+  </div>
 </div>
 
+<!-- SCRIPTS -->
 <script>
+// Theme Toggle
+const themeToggle = document.getElementById('themeToggle');
+const htmlElement = document.documentElement;
+
+function initTheme() {
+  const stored = localStorage.getItem('docvista-theme');
+  const prefer = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const isDark = stored ? stored === 'dark' : prefer;
+  applyTheme(isDark);
+}
+
+function applyTheme(isDark) {
+  if (isDark) {
+    htmlElement.setAttribute('data-theme', 'dark');
+    themeToggle.textContent = '☀️';
+    localStorage.setItem('docvista-theme', 'dark');
+  } else {
+    htmlElement.removeAttribute('data-theme');
+    themeToggle.textContent = '🌙';
+    localStorage.setItem('docvista-theme', 'light');
+  }
+}
+
+themeToggle.addEventListener('click', () => {
+  const isDark = htmlElement.getAttribute('data-theme') === 'dark';
+  applyTheme(!isDark);
+});
+
+initTheme();
+
+// View Keywords
 document.addEventListener('click', function(e){
-  if (e.target && e.target.classList.contains('view-kws')){
+  if (e.target && (e.target.classList.contains('view-kws-btn') || e.target.closest('.view-kws-btn'))) {
     e.preventDefault();
-    const idx = e.target.dataset.idx;
+    const link = e.target.closest('.view-kws-btn');
+    const idx = link.dataset.idx;
     const box = document.getElementById('kws-' + idx);
     if (!box) return;
-    if (box.style.display === 'block') { box.style.display = 'none'; return; }
-    box.innerHTML = 'Loading...';
+    
+    if (box.style.display === 'block') { 
+      box.style.display = 'none';
+      link.innerHTML = '<i class="fas fa-tags"></i> View Top Keywords';
+      return; 
+    }
+    
+    box.innerHTML = '<div style="text-align:center;"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
     fetch('/keywords/' + idx).then(r => r.json()).then(js => {
-      if (Array.isArray(js)){
-        box.innerHTML = '<div style="padding:8px;background:#f7f9ff;border-radius:6px;">' + js.join(', ') + '</div>';
+      if (Array.isArray(js) && js.length > 0) {
+        const kws = js.map(k => `<span class="keyword-item">${k}</span>`).join('');
+        box.innerHTML = kws;
       } else {
-        box.innerHTML = '<div style="color:#b00">Error fetching keywords</div>';
+        box.innerHTML = '<div style="color:#ef4444;"><i class="fas fa-exclamation-circle"></i> No keywords found</div>';
       }
       box.style.display = 'block';
-    }).catch(_=>{ box.innerHTML = '<div style="color:#b00">Error</div>'; box.style.display='block';});
+      link.innerHTML = '<i class="fas fa-times"></i> Hide Keywords';
+    }).catch(_=>{ 
+      box.innerHTML = '<div style="color:#ef4444;"><i class="fas fa-exclamation-circle"></i> Error fetching keywords</div>'; 
+      box.style.display='block';
+      link.innerHTML = '<i class="fas fa-times"></i> Hide Keywords';
+    });
+  }
+});
+
+// File input visual feedback
+const fileInput = document.getElementById('fileInput');
+fileInput?.addEventListener('change', function() {
+  const label = this.nextElementSibling;
+  if (this.files && this.files[0]) {
+    label.textContent = `✓ ${this.files[0].name}`;
+    label.style.borderColor = '#10b981';
+    label.style.color = '#10b981';
   }
 });
 </script>
+
 </body>
 </html>
 """
@@ -748,12 +1448,490 @@ def export_report_route():
 @app.route("/bm25")
 def bm25_info():
     html = """
-    <div style="padding:20px;">
-      <h3>BM25 — Short Explanation</h3>
-      <p>BM25 is a widely used ranking function in information retrieval. Formula:</p>
-      <pre>score(D,Q) = Σ idf(t) * (f(t,D)*(k1+1)) / (f(t,D) + k1*(1-b+b*|D|/avgdl))</pre>
-      <a href="/">Back</a>
+    <!doctype html>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>BM25 Algorithm — DocVista</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+    * {margin:0;padding:0;box-sizing:border-box;}
+    :root {
+      --primary: #3956ff;
+      --primary-dark: #1e3a8a;
+      --secondary: #f59e0b;
+      --success: #10b981;
+      --danger: #ef4444;
+      --light-bg: #f8fafc;
+      --card-bg: #ffffff;
+      --text-primary: #0f172a;
+      --text-secondary: #64748b;
+      --border-color: #e2e8f0;
+      --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.12);
+      --shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.15);
+    }
+    [data-theme="dark"] {
+      --light-bg: #0f172a;
+      --card-bg: #1e293b;
+      --text-primary: #f1f5f9;
+      --text-secondary: #cbd5e1;
+      --border-color: #334155;
+    }
+    html, body {
+      background: var(--light-bg);
+      color: var(--text-primary);
+      transition: background-color 0.3s ease, color 0.3s ease;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    body { padding: 24px 16px; }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    /* HEADER */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .back-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: var(--text-primary);
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 14px;
+      transition: all 0.3s ease;
+    }
+    .back-btn:hover {
+      background: var(--primary);
+      color: white;
+      border-color: var(--primary);
+      gap: 12px;
+    }
+    .theme-toggle {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 16px;
+      transition: all 0.3s ease;
+    }
+    .theme-toggle:hover {
+      background: var(--light-bg);
+      border-color: var(--primary);
+    }
+    .title {
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    /* MAIN CONTENT */
+    .content {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 28px;
+      box-shadow: var(--shadow-md);
+      transition: all 0.3s ease;
+    }
+    .card:hover {
+      box-shadow: var(--shadow-lg);
+      transform: translateY(-2px);
+    }
+    .card-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-primary);
+    }
+    .card-title i {
+      color: var(--primary);
+    }
+    .card-text {
+      font-size: 14px;
+      line-height: 1.7;
+      color: var(--text-secondary);
+      margin-bottom: 16px;
+    }
+    .formula-box {
+      background: linear-gradient(135deg, rgba(57, 86, 255, 0.05), rgba(245, 158, 11, 0.05));
+      border: 1px solid rgba(57, 86, 255, 0.2);
+      border-radius: 10px;
+      padding: 20px;
+      margin: 16px 0;
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+      font-size: 13px;
+      overflow-x: auto;
+      line-height: 1.8;
+      color: var(--primary);
+    }
+    .param-list {
+      list-style: none;
+      margin: 12px 0;
+    }
+    .param-list li {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .param-list li:last-child {
+      border-bottom: none;
+    }
+    .param-label {
+      font-weight: 600;
+      color: var(--primary);
+      min-width: 60px;
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+      font-size: 13px;
+    }
+    .param-desc {
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+    .comparison {
+      background: var(--light-bg);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 16px 0;
+    }
+    .comparison-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .comparison-row:last-child {
+      border-bottom: none;
+    }
+    .comparison-cell {
+      padding: 14px;
+      font-size: 13px;
+    }
+    .comparison-cell:first-child {
+      background: rgba(57, 86, 255, 0.05);
+      font-weight: 600;
+      color: var(--primary);
+      border-right: 1px solid var(--border-color);
+    }
+    .feature-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin: 12px 0;
+    }
+    .feature-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px;
+      background: var(--light-bg);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    .feature-item i {
+      color: var(--success);
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.3s ease;
+      margin-top: 16px;
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(57, 86, 255, 0.3);
+    }
+    /* FOOTER */
+    .footer {
+      margin-top: 48px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border-color);
+      text-align: center;
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+    .footer strong {
+      color: var(--text-primary);
+    }
+    @media (max-width: 768px) {
+      .content {
+        grid-template-columns: 1fr;
+      }
+      .comparison-row {
+        grid-template-columns: 1fr;
+      }
+      .comparison-cell:first-child {
+        border-right: none;
+        border-bottom: 1px solid var(--border-color);
+      }
+      .title {
+        font-size: 24px;
+      }
+    }
+    </style>
+    </head>
+    <body>
+    <div class="container">
+      <!-- HEADER -->
+      <div class="header">
+        <div>
+          <h1 class="title">BM25 Algorithm</h1>
+          <p class="subtitle">Probabilistic Ranking Function for Information Retrieval</p>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">🌙</button>
+          <a href="/" class="back-btn"><i class="fas fa-arrow-left"></i> Back to Search</a>
+        </div>
+      </div>
+
+      <!-- MAIN CONTENT -->
+      <div class="content">
+        <!-- ABOUT BM25 -->
+        <div class="card">
+          <h2 class="card-title">
+            <i class="fas fa-book"></i> What is BM25?
+          </h2>
+          <p class="card-text">
+            BM25 (Best Match 25) is a probabilistic ranking function widely used in modern search engines and information retrieval systems. It combines term frequency, inverse document frequency, and document length normalization to produce highly relevant search results.
+          </p>
+          <p class="card-text">
+            BM25 is considered superior to traditional TF-IDF because it accounts for document length saturation, preventing long documents from dominating results.
+          </p>
+          <div class="feature-list">
+            <div class="feature-item">
+              <i class="fas fa-check-circle"></i>
+              <span><strong>Probabilistic:</strong> Based on probability theory and information retrieval models</span>
+            </div>
+            <div class="feature-item">
+              <i class="fas fa-check-circle"></i>
+              <span><strong>Length-aware:</strong> Normalizes scores based on document length</span>
+            </div>
+            <div class="feature-item">
+              <i class="fas fa-check-circle"></i>
+              <span><strong>Tunable:</strong> Configurable parameters for different use cases</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- THE FORMULA -->
+        <div class="card">
+          <h2 class="card-title">
+            <i class="fas fa-calculator"></i> The Formula
+          </h2>
+          <div class="formula-box">
+score(D,Q) = Σ IDF(q)<br>
+· (f(q,D) · (k₁ + 1))<br>
+────────────────────<br>
+f(q,D) + k₁(1 - b<br>
++ b · |D| / avgdl)
+          </div>
+          <p class="card-text" style="margin-top: 16px; font-size: 12px;">
+            Where each term in the query contributes to the total relevance score based on its frequency in the document and across the corpus.
+          </p>
+        </div>
+
+        <!-- PARAMETERS -->
+        <div class="card">
+          <h2 class="card-title">
+            <i class="fas fa-sliders-h"></i> Parameters
+          </h2>
+          <ul class="param-list">
+            <li>
+              <span class="param-label">IDF(q)</span>
+              <span class="param-desc">Inverse Document Frequency of query term — measures rarity across corpus</span>
+            </li>
+            <li>
+              <span class="param-label">f(q,D)</span>
+              <span class="param-desc">Term frequency of query term in document D</span>
+            </li>
+            <li>
+              <span class="param-label">|D|</span>
+              <span class="param-desc">Length of document D (in words/tokens)</span>
+            </li>
+            <li>
+              <span class="param-label">avgdl</span>
+              <span class="param-desc">Average document length in the entire corpus</span>
+            </li>
+            <li>
+              <span class="param-label">k₁</span>
+              <span class="param-desc">Controls term frequency saturation (default: 1.5)</span>
+            </li>
+            <li>
+              <span class="param-label">b</span>
+              <span class="param-desc">Controls length normalization (0.0 = none, 1.0 = full)</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- COMPARISON -->
+        <div class="card">
+          <h2 class="card-title">
+            <i class="fas fa-scale-balanced"></i> BM25 vs TF-IDF
+          </h2>
+          <div class="comparison">
+            <div class="comparison-row">
+              <div class="comparison-cell">Aspect</div>
+              <div class="comparison-cell">BM25 / TF-IDF</div>
+            </div>
+            <div class="comparison-row">
+              <div class="comparison-cell">Term Frequency</div>
+              <div class="comparison-cell">Saturates (diminishing returns)</div>
+            </div>
+            <div class="comparison-row">
+              <div class="comparison-cell">Length Normalization</div>
+              <div class="comparison-cell">Advanced tuning / Simple</div>
+            </div>
+            <div class="comparison-row">
+              <div class="comparison-cell">Document Length Bias</div>
+              <div class="comparison-cell">Minimal / Prone to long docs</div>
+            </div>
+            <div class="comparison-row">
+              <div class="comparison-cell">Ranking Quality</div>
+              <div class="comparison-cell">Superior / Good baseline</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- USE CASES -->
+        <div class="card">
+          <h2 class="card-title">
+            <i class="fas fa-lightbulb"></i> Use Cases
+          </h2>
+          <div class="feature-list">
+            <div class="feature-item">
+              <i class="fas fa-search"></i>
+              <span>Web search engines (Google, Bing use variants)</span>
+            </div>
+            <div class="feature-item">
+              <i class="fas fa-search"></i>
+              <span>Enterprise full-text search (Elasticsearch, Solr)</span>
+            </div>
+            <div class="feature-item">
+              <i class="fas fa-search"></i>
+              <span>Document retrieval systems</span>
+            </div>
+            <div class="feature-item">
+              <i class="fas fa-search"></i>
+              <span>Question answering systems</span>
+            </div>
+            <div class="feature-item">
+              <i class="fas fa-search"></i>
+              <span>Academic paper ranking</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- TUNING GUIDE -->
+        <div class="card">
+          <h2 class="card-title">
+            <i class="fas fa-wrench"></i> Parameter Tuning
+          </h2>
+          <p class="card-text">
+            <strong>k₁ (1.5 default):</strong> Higher values increase term frequency impact. Range: 0.5-3.0
+          </p>
+          <p class="card-text">
+            <strong>b (0.75 default):</strong> Controls length normalization strength. 0 = off, 1 = full
+          </p>
+          <p class="card-text">
+            For short texts like tweets: Lower k₁ (0.9) and higher b (0.8)
+          </p>
+          <p class="card-text">
+            For long documents: Higher k₁ (2.0) and lower b (0.3)
+          </p>
+        </div>
+      </div>
+
+      <!-- FOOTER -->
+      <div class="footer">
+        <strong>DocVista</strong> · BM25 Education Center
+        <br>
+        Learn more about advanced information retrieval ranking algorithms
+      </div>
     </div>
+
+    <script>
+    // Theme Toggle
+    const themeToggle = document.getElementById('themeToggle');
+    const htmlElement = document.documentElement;
+
+    function initTheme() {
+      const stored = localStorage.getItem('docvista-theme');
+      const prefer = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const isDark = stored ? stored === 'dark' : prefer;
+      applyTheme(isDark);
+    }
+
+    function applyTheme(isDark) {
+      if (isDark) {
+        htmlElement.setAttribute('data-theme', 'dark');
+        themeToggle.textContent = '☀️';
+        localStorage.setItem('docvista-theme', 'dark');
+      } else {
+        htmlElement.removeAttribute('data-theme');
+        themeToggle.textContent = '🌙';
+        localStorage.setItem('docvista-theme', 'light');
+      }
+    }
+
+    themeToggle.addEventListener('click', () => {
+      const isDark = htmlElement.getAttribute('data-theme') === 'dark';
+      applyTheme(!isDark);
+    });
+
+    initTheme();
+    </script>
+    </body>
+    </html>
     """
     return html
 
