@@ -305,23 +305,32 @@ def highlight_pdf_bytes(original_path, query_terms):
 def normalize_text_for_pdf(text):
     if text is None:
         return ""
+    # Replace fancy unicode punctuation with ASCII equivalents
     replacements = {
         '\u2013': '-', '\u2014': '-', '\u2015': '-',
-        '\u2212': '-', '\u2022': '*', '\u00A0': ' '
+        '\u2212': '-', '\u2022': '*', '\u00A0': ' ',
+        '\u200b': '',  # Zero-width space
+        '\u200c': '',  # Zero-width non-joiner
+        '\u200d': '',  # Zero-width joiner
+        '\u200e': '',  # Left-to-right mark
+        '\u200f': '',  # Right-to-left mark
     }
     for a, b in replacements.items():
         text = text.replace(a, b)
-    # remove C category characters
-    text = "".join(ch for ch in text if unicodedata.category(ch)[0] != "C")
-    return str(text)
+    # Remove ALL control characters except newline and tab
+    text = "".join(ch for ch in text if unicodedata.category(ch)[0] != "C" or ch in '\n\t')
+    # Remove any remaining non-ASCII printable characters that cause issues
+    text = "".join(ch if ord(ch) < 128 or ord(ch) >= 160 else '' for ch in text)
+    return str(text).strip()
 
 def safe_wrap_long_tokens(text, max_len=40):
     """
-    Insert zero-width spaces inside very long tokens to let FPDF wrap them.
+    Insert hard line breaks inside very long tokens.
+    Avoids zero-width spaces which FPDF can't handle.
     """
     if not text:
         return ""
-    # sanitize and remove control characters except newline
+    # sanitize: remove problematic control characters
     text = text.replace("\t", " ").replace("\r", " ")
     text = ''.join(ch for ch in text if ord(ch) >= 32 or ch == '\n')
     words = text.split(" ")
@@ -330,8 +339,9 @@ def safe_wrap_long_tokens(text, max_len=40):
         if len(w) <= max_len:
             wrapped.append(w)
         else:
+            # Hard break with space separator
             parts = [w[i:i+max_len] for i in range(0, len(w), max_len)]
-            wrapped.append("\u200b".join(parts))
+            wrapped.extend(parts)
     return " ".join(wrapped)
 
 def force_break_long_tokens(text, max_len=80):
@@ -341,6 +351,8 @@ def force_break_long_tokens(text, max_len=80):
     """
     if not text:
         return ""
+    # Remove problematic Unicode before breaking
+    text = normalize_text_for_pdf(text)
     tokens = text.split()
     out = []
     for tkn in tokens:
@@ -354,10 +366,24 @@ def force_break_long_tokens(text, max_len=80):
 def clean_line_for_pdf(line):
     if line is None:
         return ""
-    # strip zero width weirdness, keep printable
+    # Convert to string and normalize
     line = str(line)
     line = line.replace("\t", " ").replace("\r", " ")
-    line = ''.join(ch for ch in line if ord(ch) >= 32)
+    
+    # Remove all problematic Unicode characters
+    problematic_chars = {
+        '\u200b',  # Zero-width space
+        '\u200c',  # Zero-width non-joiner
+        '\u200d',  # Zero-width joiner
+        '\u200e',  # Left-to-right mark
+        '\u200f',  # Right-to-left mark
+        '\ufeff',  # Zero-width no-break space
+    }
+    for char in problematic_chars:
+        line = line.replace(char, '')
+    
+    # Keep only ASCII printable and common Latin extended (160-255)
+    line = ''.join(ch for ch in line if (32 <= ord(ch) <= 126) or (160 <= ord(ch) <= 255) or ch in '\n')
     return line
 
 def chunk_text_final(text, size):
@@ -369,95 +395,94 @@ def chunk_text_final(text, size):
 
 def create_search_report_pdf(query, method, results):
     pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_auto_page_break(auto=True, margin=12)
     pdf.add_page()
 
     # Try DejaVu for unicode; fallback to Arial
-    font_candidates = ["fonts/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVuSans.ttf"]
-    base_font = "Arial"
+    font_candidates = ["fonts/DejaVuSans.ttf", "fonts/ttf/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVuSans.ttf"]
+    base_font = "helvetica"  # Default to built-in font
+    custom_font_loaded = False
+    
     for fp in font_candidates:
         if os.path.exists(fp):
             try:
                 pdf.add_font("DejaVu", "", fp, uni=True)
                 base_font = "DejaVu"
+                custom_font_loaded = True
                 break
             except Exception:
-                base_font = "Arial"
+                pass
 
-    # Title
-    pdf.set_font(base_font, size=16)
-    title = normalize_text_for_pdf("DocVista — Search Report")
-    safe = safe_wrap_long_tokens(clean_line_for_pdf(title), max_len=40)
-    safe = force_break_long_tokens(safe, max_len=200)
-    try:
-        pdf.multi_cell(0, 8, safe)
-    except Exception:
-        for ch in chunk_text_final(safe, 120):
-            pdf.multi_cell(0, 8, ch)
+    # ==================== TITLE ====================
+    if custom_font_loaded:
+        pdf.set_font(base_font, size=18)  # No bold for custom fonts
+    else:
+        pdf.set_font(base_font, "B", size=18)  # Bold works with built-in fonts
+    pdf.cell(0, 10, "DocVista - Search Report", ln=True, align="C")
+    pdf.ln(5)
 
-    pdf.ln(3)
-    pdf.set_font(base_font, size=11)
-    dashboard = f"Query: {query}\nMethod: {method}\nResults: {len(results)}\nGenerated: {time.strftime('%Y-%m-%d %H:%M:%S')}"
-    for line in dashboard.split("\n"):
-        l = normalize_text_for_pdf(line)
-        l = safe_wrap_long_tokens(l, max_len=40)
-        l = force_break_long_tokens(l, max_len=200)
-        try:
-            pdf.multi_cell(0, 6, l)
-        except Exception:
-            for ch in chunk_text_final(l, 120):
-                pdf.multi_cell(0, 6, ch)
-    pdf.ln(6)
+    # ==================== SEARCH INFO ====================
+    pdf.set_font(base_font, size=10)
+    pdf.set_fill_color(220, 220, 220)
+    pdf.cell(0, 6, f"Query: {clean_line_for_pdf(query)}", ln=True, fill=True)
+    pdf.cell(0, 6, f"Method: {method.upper()}", ln=True, fill=True)
+    pdf.cell(0, 6, f"Results: {len(results)} documents", ln=True, fill=True)
+    pdf.cell(0, 6, f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}", ln=True, fill=True)
+    pdf.ln(5)
 
-    # Results
+    # ==================== TABLE HEADER ====================
+    if custom_font_loaded:
+        pdf.set_font(base_font, size=11)  # No bold for custom fonts
+    else:
+        pdf.set_font(base_font, "B", size=11)  # Bold works with built-in fonts
+    pdf.set_fill_color(40, 40, 40)
+    pdf.set_text_color(255, 255, 255)
+    
+    # Column widths: No. | Document Name | Score
+    col_no = 12
+    col_name = 130
+    col_score = 38
+    
+    pdf.cell(col_no, 8, "#", border=1, fill=True, align="C")
+    pdf.cell(col_name, 8, "Document Name", border=1, fill=True, align="L")
+    pdf.cell(col_score, 8, "Score", border=1, fill=True, align="C")
+    pdf.ln(8)
+
+    # ==================== TABLE ROWS ====================
+    pdf.set_font(base_font, size=10)
+    pdf.set_text_color(0, 0, 0)
+    
     for i, r in enumerate(results, start=1):
-        pdf.set_font(base_font, size=12)
-        title = f"{i}. {r['name']} (Score: {r['score']})"
-        t = normalize_text_for_pdf(title)
-        t = safe_wrap_long_tokens(t, max_len=40)
-        t = force_break_long_tokens(t, max_len=200)
-        for chunk in chunk_text_final(t, 160):
-            pdf.multi_cell(0, 6, chunk)
+        # Alternate row background colors for readability
+        fill = (i % 2 == 0)
+        if fill:
+            pdf.set_fill_color(240, 240, 240)
+        else:
+            pdf.set_fill_color(255, 255, 255)
+        
+        doc_name = clean_line_for_pdf(r['name'][:50])  # Truncate long names
+        score_str = f"{r['score']:.4f}"
+        
+        pdf.cell(col_no, 8, str(i), border=1, fill=fill, align="C")
+        pdf.cell(col_name, 8, doc_name, border=1, fill=fill, align="L")
+        pdf.cell(col_score, 8, score_str, border=1, fill=fill, align="C")
+        pdf.ln(8)
 
-        pdf.set_font(base_font, size=10)
-        try:
-            kws = engine.top_keywords(r["index"], top_n=8)
-        except Exception:
-            kws = []
-        if kws:
-            kw_line = "Top keywords: " + ", ".join(kws)
-            kw_line = normalize_text_for_pdf(kw_line)
-            kw_line = safe_wrap_long_tokens(kw_line, max_len=40)
-            kw_line = force_break_long_tokens(kw_line, max_len=200)
-            try:
-                pdf.multi_cell(0, 5, kw_line)
-            except Exception:
-                for ch in chunk_text_final(kw_line, 120):
-                    pdf.multi_cell(0, 5, ch)
-
-        # Snippet
-        try:
-            pdf.multi_cell(0, 5, "Snippet:")
-        except Exception:
-            pass
-
-        snippet = re.sub(r"<[^>]*>", "", r.get("snippet", ""))
-        snippet = normalize_text_for_pdf(snippet)
-        snippet = safe_wrap_long_tokens(snippet, max_len=40)
-        snippet = force_break_long_tokens(snippet, max_len=200)
-        try:
-            for ch in chunk_text_final(snippet, 600):
-                pdf.multi_cell(0, 5, ch)
-        except Exception:
-            # final fallback per-character
-            for ch in chunk_text_final(snippet, 120):
-                pdf.multi_cell(0, 5, ch)
-        pdf.ln(4)
+    # ==================== FOOTER ====================
+    pdf.ln(5)
+    if custom_font_loaded:
+        pdf.set_font(base_font, size=9)  # No italic for custom fonts
+    else:
+        pdf.set_font(base_font, "I", size=9)  # Italic works with built-in fonts
+    pdf.set_text_color(100, 100, 100)
+    pdf.multi_cell(0, 4, f"Ranking Method: {method.upper()} | Total Documents Indexed: {len(engine.doc_names)} | Page {pdf.page_no()}")
 
     # Build bytes safely
-    s = pdf.output(dest='S')
-    b = s.encode('latin-1', 'replace')
-    buf = io.BytesIO(b)
+    pdf_bytes = pdf.output(dest='S')
+    # pdf.output() already returns bytes, no need to encode
+    if isinstance(pdf_bytes, str):
+        pdf_bytes = pdf_bytes.encode('latin-1', 'replace')
+    buf = io.BytesIO(pdf_bytes)
     buf.seek(0)
     return buf
 
