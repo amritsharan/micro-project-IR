@@ -190,6 +190,15 @@ class IREngine:
         self._build()
 
     def search(self, query, method="tfidf", top_k=10):
+        # Check if query is enclosed in double quotes for exact phrase matching
+        is_exact_phrase = query.strip().startswith('"') and query.strip().endswith('"')
+        
+        if is_exact_phrase:
+            # Remove quotes and search for exact phrase
+            phrase_query = query.strip()[1:-1]  # Remove leading and trailing quotes
+            return self._search_exact_phrase(phrase_query, top_k)
+        
+        # Standard tokenized search with stopword filtering
         query_plain = preprocess(query)
         query_norm = normalize_for_index(query_plain)
         # Get raw tokens
@@ -238,6 +247,41 @@ class IREngine:
                 "path": self.doc_paths[idx],
                 "score": round(score, 4),
                 "snippet": snippet
+            })
+        return enriched
+
+    def _search_exact_phrase(self, phrase, top_k=10):
+        """Search for exact phrase match in documents (case-insensitive)"""
+        phrase_lower = phrase.lower()
+        results = []
+        
+        for idx, doc in enumerate(self.docs_raw):
+            doc_lower = doc.lower()
+            if phrase_lower in doc_lower:
+                # Count occurrences for scoring
+                count = doc_lower.count(phrase_lower)
+                # Score based on position and frequency
+                first_pos = doc_lower.find(phrase_lower)
+                # Earlier position = higher score, more occurrences = higher score
+                position_score = 1.0 - (first_pos / max(len(doc), 1000)) * 0.5
+                frequency_score = min(count / 10.0, 1.0)  # Cap at 10 occurrences
+                score = (position_score * 0.4 + frequency_score * 0.6)
+                results.append((idx, score, count))
+        
+        # Sort by score (highest first)
+        results.sort(key=lambda x: x[1], reverse=True)
+        results = results[:top_k]
+        
+        enriched = []
+        for idx, score, count in results:
+            snippet = extract_snippet_phrase(self.docs_raw[idx], phrase)
+            enriched.append({
+                "index": idx,
+                "name": self.doc_names[idx],
+                "path": self.doc_paths[idx],
+                "score": round(score, 4),
+                "snippet": snippet,
+                "phrase_matches": count
             })
         return enriched
 
@@ -297,6 +341,30 @@ def extract_snippet(doc_text, query_tokens, window=240):
             continue
         esc = re.escape(t)
         snippet = re.sub(f"(?i)({esc})", r"<mark>\1</mark>", snippet)
+    return snippet
+
+def extract_snippet_phrase(doc_text, phrase, window=240):
+    """Extract snippet for exact phrase match (case-insensitive)"""
+    if not doc_text or not phrase:
+        return ""
+    lower = doc_text.lower()
+    phrase_lower = phrase.lower()
+    best_pos = lower.find(phrase_lower)
+    
+    if best_pos == -1:
+        snippet = (doc_text[:window] + "...") if len(doc_text) > window else doc_text
+    else:
+        start = max(0, best_pos - window // 2)
+        end = min(len(doc_text), start + window)
+        snippet = doc_text[start:end]
+        if start > 0:
+            snippet = "..." + snippet
+        if end < len(doc_text):
+            snippet = snippet + "..."
+    
+    # Highlight exact phrase
+    esc = re.escape(phrase)
+    snippet = re.sub(f"(?i)({esc})", r"<mark>\1</mark>", snippet)
     return snippet
 
 # ----------------------------
