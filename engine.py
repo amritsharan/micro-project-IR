@@ -1,23 +1,17 @@
-# engine.py — DocVista final single-file app
-# Features:
-# - Multi-format ingestion: .pdf, .docx, .txt
-# - TF-IDF (Scikit-learn) and BM25 ranking
-# - Snippets with <mark> highlights
-# - TF-IDF top keywords modal
-# - PDF highlighting (PyMuPDF) -> downloads highlighted PDF
-# - Export search results -> PDF report with dashboard + keywords + percentages
-# - Upload UI (Option B), search history (localStorage), dark/light theme
-# - Robust handling for encoding/long tokens/FPDF issues
+# engine.py — DocVista (Material + Professional UI)
+# Run: python engine.py
+# Requirements:
+# pip install flask python-docx PyPDF2 pymupdf fpdf2 scikit-learn numpy
 
 import os
 import io
 import re
 import string
 import time
-from math import log
-from pathlib import Path
-from urllib.parse import quote_plus, unquote_plus
 import unicodedata
+from math import log
+from urllib.parse import quote_plus, unquote_plus
+from pathlib import Path
 
 from flask import Flask, request, render_template_string, send_file, redirect, url_for, jsonify
 from werkzeug.utils import secure_filename
@@ -38,10 +32,10 @@ ALLOWED_EXT = (".txt", ".pdf", ".docx")
 os.makedirs(DOCS_FOLDER, exist_ok=True)
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200 MB
+app.config["MAX_CONTENT_LENGTH"] = 300 * 1024 * 1024  # 300 MB
 
 # ----------------------------
-# Utilities: extract & preprocess
+# Utilities: extraction & preprocess
 # ----------------------------
 def extract_text_from_pdf(path):
     out = ""
@@ -49,11 +43,14 @@ def extract_text_from_pdf(path):
         with open(path, "rb") as f:
             reader = PyPDF2.PdfReader(f)
             for p in reader.pages:
-                txt = p.extract_text()
+                try:
+                    txt = p.extract_text()
+                except Exception:
+                    txt = None
                 if txt:
                     out += txt + " "
     except Exception:
-        # fallback: try PyMuPDF extraction
+        # fallback to PyMuPDF
         try:
             doc = fitz.open(path)
             for page in doc:
@@ -159,12 +156,12 @@ class IREngine:
 
     def _build(self):
         self.vectorizer = TfidfVectorizer(stop_words="english")
-        if self.docs_raw:
-            try:
+        try:
+            if self.docs_raw:
                 self.doc_vectors = self.vectorizer.fit_transform(self.docs_raw)
-            except Exception:
+            else:
                 self.doc_vectors = None
-        else:
+        except Exception:
             self.doc_vectors = None
         self.docs_tokens = [normalize_for_index(d).split() for d in self.docs_raw]
         self.bm25 = BM25Simple(self.docs_tokens) if self.docs_tokens else None
@@ -186,11 +183,21 @@ class IREngine:
         else:
             if self.doc_vectors is None:
                 return []
-            q_vec = self.vectorizer.transform([query_plain])
-            sims = cosine_similarity(q_vec, self.doc_vectors)[0]
-            ranked = np.argsort(sims)[::-1]
-            for idx in ranked[:top_k]:
-                results.append((idx, float(sims[idx])))
+            try:
+                q_vec = self.vectorizer.transform([query_plain])
+                sims = cosine_similarity(q_vec, self.doc_vectors)[0]
+            except Exception:
+                if self.bm25:
+                    scores = self.bm25.score(q_tokens)
+                    ranked = np.argsort(scores)[::-1]
+                    for idx in ranked[:top_k]:
+                        results.append((idx, float(scores[idx])))
+                else:
+                    return []
+            else:
+                ranked = np.argsort(sims)[::-1]
+                for idx in ranked[:top_k]:
+                    results.append((idx, float(sims[idx])))
         enriched = []
         for idx, score in results:
             snippet = extract_snippet(self.docs_raw[idx], q_tokens)
@@ -203,31 +210,36 @@ class IREngine:
             })
         return enriched
 
-    # top keywords method
     def top_keywords(self, doc_id, top_n=10):
         if self.doc_vectors is None:
             return []
-        if doc_id < 0 or doc_id >= len(self.doc_vectors):
+        if doc_id < 0 or doc_id >= self.doc_vectors.shape[0]:
             return []
-        features = None
         try:
             features = self.vectorizer.get_feature_names_out()
         except Exception:
             features = self.vectorizer.get_feature_names()
         vec = self.doc_vectors[doc_id]
         if hasattr(vec, "toarray"):
-            arr = np.asarray(vec.todense()).ravel()
+            arr = np.asarray(vec.toarray()).ravel()
         else:
-            arr = np.asarray(vec).ravel()
+            try:
+                arr = np.asarray(vec.todense()).ravel()
+            except Exception:
+                return []
         if arr.sum() == 0:
             return []
         inds = np.argsort(arr)[::-1][:top_n]
-        return [f"{features[i]} ({arr[i]:.4f})" for i in inds if arr[i] > 0]
+        kws = []
+        for i in inds:
+            if arr[i] > 0:
+                kws.append(f"{features[i]} ({arr[i]:.4f})")
+        return kws
 
 # ----------------------------
-# Snippet extraction utility
+# Snippet extraction
 # ----------------------------
-def extract_snippet(doc_text, query_tokens, window=200):
+def extract_snippet(doc_text, query_tokens, window=240):
     if not doc_text:
         return ""
     lower = doc_text.lower()
@@ -249,7 +261,6 @@ def extract_snippet(doc_text, query_tokens, window=200):
             snippet = "..." + snippet
         if end < len(doc_text):
             snippet = snippet + "..."
-    # highlight terms
     for t in set(query_tokens):
         if not t:
             continue
@@ -258,30 +269,17 @@ def extract_snippet(doc_text, query_tokens, window=200):
     return snippet
 
 # ----------------------------
-# PDF Highlighting (download)
+# PDF Highlighting (PyMuPDF)
 # ----------------------------
 def highlight_pdf_bytes(original_path, query_terms):
-    """
-    Return BytesIO with highlights added. query_terms should be token list (lowercased).
-    """
-    # Try to open PDF safely
     try:
         doc = fitz.open(original_path)
-    except Exception as e:
-        # try reading as stream
-        with open(original_path, "rb") as fh:
-            data = fh.read()
-        try:
-            doc = fitz.open(stream=data, filetype="pdf")
-        except Exception as e2:
-            raise Exception(f"Could not open PDF for highlighting: {e} / {e2}")
-
+    except Exception:
+        with open(original_path, "rb") as f:
+            data = f.read()
+        doc = fitz.open(stream=data, filetype="pdf")
     query_terms = [t.lower() for t in query_terms if t]
     for page in doc:
-        try:
-            page_text = page.get_text("text").lower()
-        except Exception:
-            page_text = ""
         for term in query_terms:
             if not term.strip():
                 continue
@@ -292,10 +290,8 @@ def highlight_pdf_bytes(original_path, query_terms):
                         annot = page.add_highlight_annot(r)
                         annot.update()
                     except Exception:
-                        # ignore individual annotation failures
                         pass
             except Exception:
-                # ignore search errors for this term/page
                 pass
     out = io.BytesIO()
     doc.save(out, garbage=4, deflate=True)
@@ -304,7 +300,7 @@ def highlight_pdf_bytes(original_path, query_terms):
     return out
 
 # ----------------------------
-# PDF Export helpers (FPDF safe)
+# PDF Export helpers — robust against long tokens
 # ----------------------------
 def normalize_text_for_pdf(text):
     if text is None:
@@ -313,312 +309,342 @@ def normalize_text_for_pdf(text):
         '\u2013': '-', '\u2014': '-', '\u2015': '-',
         '\u2212': '-', '\u2022': '*', '\u00A0': ' '
     }
-    for a,b in replacements.items():
-        text = text.replace(a,b)
+    for a, b in replacements.items():
+        text = text.replace(a, b)
+    # remove C category characters
     text = "".join(ch for ch in text if unicodedata.category(ch)[0] != "C")
     return str(text)
 
-def safe_wrap_long_tokens(text, max_len=60):
-    parts = []
-    for word in str(text).split():
-        if len(word) > max_len:
-            for i in range(0, len(word), max_len):
-                parts.append(word[i:i+max_len])
+def safe_wrap_long_tokens(text, max_len=40):
+    """
+    Insert zero-width spaces inside very long tokens to let FPDF wrap them.
+    """
+    if not text:
+        return ""
+    # sanitize and remove control characters except newline
+    text = text.replace("\t", " ").replace("\r", " ")
+    text = ''.join(ch for ch in text if ord(ch) >= 32 or ch == '\n')
+    words = text.split(" ")
+    wrapped = []
+    for w in words:
+        if len(w) <= max_len:
+            wrapped.append(w)
         else:
-            parts.append(word)
-    return " ".join(parts)
+            parts = [w[i:i+max_len] for i in range(0, len(w), max_len)]
+            wrapped.append("\u200b".join(parts))
+    return " ".join(wrapped)
 
-def chunk_text(text, max_chars=800):
-    text = str(text)
+def force_break_long_tokens(text, max_len=80):
+    """
+    Breaks tokens longer than max_len into hard chunks separated by spaces.
+    This is last-resort to prevent FPDF from failing.
+    """
+    if not text:
+        return ""
+    tokens = text.split()
+    out = []
+    for tkn in tokens:
+        if len(tkn) > max_len:
+            chunks = [tkn[i:i+max_len] for i in range(0, len(tkn), max_len)]
+            out.extend(chunks)
+        else:
+            out.append(tkn)
+    return " ".join(out)
+
+def clean_line_for_pdf(line):
+    if line is None:
+        return ""
+    # strip zero width weirdness, keep printable
+    line = str(line)
+    line = line.replace("\t", " ").replace("\r", " ")
+    line = ''.join(ch for ch in line if ord(ch) >= 32)
+    return line
+
+def chunk_text_final(text, size):
+    """break a string into final safe chunks"""
     if not text:
         return []
-    start = 0
-    L = len(text)
-    chunks = []
-    while start < L:
-        end = min(L, start + max_chars)
-        if end < L:
-            seg = text[start:end]
-            last_space = seg.rfind(" ")
-            if last_space > int(max_chars * 0.4):
-                end = start + last_space
-        chunks.append(text[start:end].strip())
-        start = end
-    return chunks
+    text = str(text)
+    return [text[i:i+size] for i in range(0, len(text), size)]
 
 def create_search_report_pdf(query, method, results):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
-    # register DejaVu if available for unicode
+    # Try DejaVu for unicode; fallback to Arial
     font_candidates = ["fonts/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVuSans.ttf"]
-    font_path = None
-    for f in font_candidates:
-        if os.path.exists(f):
-            font_path = f
-            break
     base_font = "Arial"
-    if font_path:
-        try:
-            pdf.add_font("DejaVu", "", font_path, uni=True)
-            base_font = "DejaVu"
-        except Exception:
-            base_font = "Arial"
+    for fp in font_candidates:
+        if os.path.exists(fp):
+            try:
+                pdf.add_font("DejaVu", "", fp, uni=True)
+                base_font = "DejaVu"
+                break
+            except Exception:
+                base_font = "Arial"
 
+    # Title
     pdf.set_font(base_font, size=16)
-    header_title = normalize_text_for_pdf(f"DocVista — Search Report")
-    pdf.multi_cell(0, 8, safe_wrap_long_tokens(header_title))
-    pdf.ln(2)
+    title = normalize_text_for_pdf("DocVista — Search Report")
+    safe = safe_wrap_long_tokens(clean_line_for_pdf(title), max_len=40)
+    safe = force_break_long_tokens(safe, max_len=200)
+    try:
+        pdf.multi_cell(0, 8, safe)
+    except Exception:
+        for ch in chunk_text_final(safe, 120):
+            pdf.multi_cell(0, 8, ch)
+
+    pdf.ln(3)
     pdf.set_font(base_font, size=11)
-    dashboard = f"Query: {query}\nRanking method: {method.upper()}\nResults: {len(results)}\nGenerated: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+    dashboard = f"Query: {query}\nMethod: {method}\nResults: {len(results)}\nGenerated: {time.strftime('%Y-%m-%d %H:%M:%S')}"
     for line in dashboard.split("\n"):
-        pdf.multi_cell(0, 6, safe_wrap_long_tokens(line))
+        l = normalize_text_for_pdf(line)
+        l = safe_wrap_long_tokens(l, max_len=40)
+        l = force_break_long_tokens(l, max_len=200)
+        try:
+            pdf.multi_cell(0, 6, l)
+        except Exception:
+            for ch in chunk_text_final(l, 120):
+                pdf.multi_cell(0, 6, ch)
     pdf.ln(6)
 
-    # Table-like results
+    # Results
     for i, r in enumerate(results, start=1):
         pdf.set_font(base_font, size=12)
-        title = normalize_text_for_pdf(f"{i}. {r['name']} (Score: {r['score']})")
-        for ch in chunk_text(safe_wrap_long_tokens(title), max_chars=160):
-            pdf.multi_cell(0, 6, ch)
+        title = f"{i}. {r['name']} (Score: {r['score']})"
+        t = normalize_text_for_pdf(title)
+        t = safe_wrap_long_tokens(t, max_len=40)
+        t = force_break_long_tokens(t, max_len=200)
+        for chunk in chunk_text_final(t, 160):
+            pdf.multi_cell(0, 6, chunk)
+
         pdf.set_font(base_font, size=10)
-        # TF-IDF keywords
         try:
-            kws = engine.top_keywords(r['index'], top_n=8)
+            kws = engine.top_keywords(r["index"], top_n=8)
         except Exception:
             kws = []
         if kws:
-            pdf.multi_cell(0, 5, "Top keywords: " + ", ".join([normalize_text_for_pdf(k) for k in kws]))
-        # snippet
-        snippet = re.sub(r"<[^>]*>", "", r.get("snippet", ""))
-        snippet = normalize_text_for_pdf(snippet)
-        for ch in chunk_text(safe_wrap_long_tokens(snippet), max_chars=600):
-            pdf.multi_cell(0, 5, ch)
-        # percentage representation
+            kw_line = "Top keywords: " + ", ".join(kws)
+            kw_line = normalize_text_for_pdf(kw_line)
+            kw_line = safe_wrap_long_tokens(kw_line, max_len=40)
+            kw_line = force_break_long_tokens(kw_line, max_len=200)
+            try:
+                pdf.multi_cell(0, 5, kw_line)
+            except Exception:
+                for ch in chunk_text_final(kw_line, 120):
+                    pdf.multi_cell(0, 5, ch)
+
+        # Snippet
         try:
-            pct = int(round(float(r['score']) * 100))
-            pdf.multi_cell(0, 5, f"Similarity: {pct}%")
+            pdf.multi_cell(0, 5, "Snippet:")
         except Exception:
             pass
+
+        snippet = re.sub(r"<[^>]*>", "", r.get("snippet", ""))
+        snippet = normalize_text_for_pdf(snippet)
+        snippet = safe_wrap_long_tokens(snippet, max_len=40)
+        snippet = force_break_long_tokens(snippet, max_len=200)
+        try:
+            for ch in chunk_text_final(snippet, 600):
+                pdf.multi_cell(0, 5, ch)
+        except Exception:
+            # final fallback per-character
+            for ch in chunk_text_final(snippet, 120):
+                pdf.multi_cell(0, 5, ch)
         pdf.ln(4)
 
-    buf = io.BytesIO()
-    pdf.output(buf)
+    # Build bytes safely
+    s = pdf.output(dest='S')
+    b = s.encode('latin-1', 'replace')
+    buf = io.BytesIO(b)
     buf.seek(0)
     return buf
 
 # ----------------------------
-# HTML template
+# HTML template — Material + Professional
+# Single-file template (render_template_string)
 # ----------------------------
-BASE_HTML = """
+BASE_HTML = r"""
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>DocVista — Smart Multi-Format IR Engine</title>
+<title>DocVista — Smart IR</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#f5f7fb;--card:#fff;--text:#0b1724;--muted:#5b6978;--accent:#2563eb;--progress:#4caf50;}
-[data-theme="dark"]{--bg:#0b1220;--card:#0b1220;--text:#e6eef8;--muted:#9fb0c8;--accent:#60a5fa;--progress:#5dd37e;}
-body{background:linear-gradient(180deg,var(--bg),#eef2f7);color:var(--text);font-family:Inter,system-ui,Arial;padding:24px;}
-.container{max-width:1100px;margin:0 auto;}
-.card-search{background:var(--card);padding:18px;border-radius:12px;box-shadow:0 6px 18px rgba(2,6,23,0.06);}
-.result-card{background:var(--card);padding:14px;border-radius:10px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);}
-mark{background:var(--accent);color:#032242;padding:0 3px;border-radius:3px;}
+:root{
+  --bg:#f4f6f9; --card:#ffffff; --muted:#6b7280; --accent:#0f62fe; --accent-2:#0066cc;
+}
+body{font-family:Inter,system-ui,Arial,Helvetica,sans-serif;background:var(--bg); color:#0b1724; padding:24px;}
+.container{max-width:1200px;margin:0 auto;}
+.header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px;}
+.brand{display:flex;gap:12px;align-items:center;}
+.logo{width:46px;height:46px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:flex;align-items:center;justify-content:center;color:white;font-weight:700;}
+.card{background:var(--card);border-radius:12px;padding:18px;box-shadow:0 6px 18px rgba(15,22,40,0.06);}
+.search-row{display:flex;gap:12px;align-items:center;}
+.input-large{flex:1;}
 .meta{color:var(--muted);font-size:0.9rem;}
-.progress-bar{height:10px;background:#ddd;border-radius:10px;overflow:hidden;}
-.progress{height:100%;background:var(--progress);width:0;transition:width 0.8s;}
-.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;}
-.modal-card{background:var(--card);padding:18px;border-radius:8px;max-width:480px;}
-.upload-box{background:var(--card);padding:14px;border-radius:8px;margin-top:12px;}
-.footer-small{color:var(--muted);margin-top:18px;text-align:center;}
+.upload-box{margin-top:12px;}
+.results{margin-top:18px;}
+.result-card{border-radius:10px;padding:14px;margin-bottom:12px;background:linear-gradient(180deg,#fff,#fbfdff);box-shadow:0 3px 10px rgba(12,20,40,0.04);display:flex;justify-content:space-between;gap:12px;}
+.result-left{flex:1;}
+.result-right{text-align:right;min-width:220px;}
+.snippet{color:#0b1724;margin-top:8px;}
+.kws{margin-top:8px;color:var(--muted);font-size:0.9rem;}
+.footer{margin-top:18px;color:var(--muted);font-size:0.9rem;text-align:center;}
+.small-btn{padding:6px 10px;font-size:0.9rem;border-radius:8px;}
+.progress-bar{height:8px;background:#eef2ff;border-radius:8px;overflow:hidden;}
+.progress{height:100%;background:linear-gradient(90deg,#4caf50,#2ea44f);width:0;transition:width 0.9s;}
+/* responsive tweaks */
+@media (max-width:800px){
+  .result-right{min-width:120px;text-align:left;}
+  .search-row{flex-direction:column;align-items:stretch;}
+}
 </style>
 </head>
-<body data-theme="light">
+<body>
 <div class="container">
-  <div class="card-search mb-3">
-    <div class="d-flex justify-content-between align-items-start">
+  <div class="header">
+    <div class="brand">
+      <div class="logo">DV</div>
       <div>
-        <h3 class="mb-0">DocVista</h3>
-        <div class="meta">Search PDFs, DOCX, TXT • Choose TF–IDF or BM25 • Export & Highlight</div>
-      </div>
-      <div class="d-flex gap-2 align-items-center">
-        <button id="themeToggle" class="btn btn-sm btn-outline-secondary">🌙</button>
-        <a class="btn btn-sm btn-outline-primary" href="/bm25">BM25 Info</a>
-        <a class="btn btn-sm btn-outline-secondary" href="/refresh">Reload</a>
+        <h3 style="margin:0">DocVista</h3>
+        <div class="meta">Material · Professional · Export & Highlight</div>
       </div>
     </div>
+    <div style="text-align:right">
+      <a class="btn btn-outline-secondary btn-sm" href="/bm25">BM25 Info</a>
+      <a class="btn btn-outline-secondary btn-sm" href="/refresh">Reload</a>
+    </div>
+  </div>
 
-    <form id="searchForm" method="POST" action="/" class="row g-2 mt-3 align-items-center">
-      <div class="col-md-8 col-12">
-        <input id="queryInput" name="query" class="form-control form-control-lg" placeholder="Enter search query (e.g. deadlock, cpu scheduling)" required />
+  <div class="card">
+    <form id="searchForm" method="POST" action="/" enctype="multipart/form-data" class="row g-2 align-items-center">
+      <div class="col-12 col-md-7">
+        <input id="queryInput" name="query" class="form-control form-control-lg input-large" placeholder="Search your documents — try 'deadlock' or 'cpu scheduling'" required />
       </div>
-      <div class="col-md-2 col-6">
+      <div class="col-12 col-md-2">
         <select name="method" class="form-select form-select-lg">
           <option value="tfidf">TF–IDF</option>
           <option value="bm25">BM25</option>
         </select>
       </div>
-      <div class="col-md-1 col-3">
+      <div class="col-6 col-md-1">
         <button class="btn btn-primary btn-lg w-100">Search</button>
       </div>
-      <div class="col-md-1 col-3">
-        <button id="clearBtn" type="button" class="btn btn-outline-secondary btn-lg w-100">Clear</button>
+      <div class="col-6 col-md-2 d-flex gap-2">
+        <input type="file" name="file" accept=".pdf,.docx,.txt" class="form-control form-control-sm" />
+        <button name="upload" value="1" class="btn btn-success">Upload</button>
       </div>
     </form>
 
-    <div class="upload-box mt-3">
-      <h6 class="mb-2">Upload New Document</h6>
-      <form action="/upload" method="POST" enctype="multipart/form-data" class="d-flex gap-2 align-items-center">
-        <input type="file" name="file" accept=".pdf,.docx,.txt" class="form-control form-control-sm" required />
-        <button class="btn btn-sm btn-success">Upload</button>
-      </form>
-      <div class="meta mt-2">Drop files into <code>/documents</code> folder or use Upload. Supported: PDF, DOCX, TXT.</div>
-    </div>
-
-    <div class="mt-3 meta">Documents loaded: {{ n_docs }}</div>
+    <div class="upload-box meta">Upload supported: PDF · DOCX · TXT • Or drop files in <code>/documents</code></div>
   </div>
 
   {% if results %}
-    <div class="mb-3 d-flex justify-content-between align-items-center">
-      <div><strong>Query:</strong> "{{ query }}"</div>
+  <div class="results">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <div><strong>Query:</strong> "{{ query }}" • <span class="meta">Documents: {{ n_docs }}</span></div>
       <div>
         <form method="POST" action="/export" style="display:inline;">
           <input type="hidden" name="query" value="{{ query }}">
           <input type="hidden" name="method" value="{{ method }}">
-          <button class="btn btn-sm btn-outline-secondary">📥 Download Full Report (PDF)</button>
+          <button class="btn btn-outline-primary small-btn">📥 Download Full Report</button>
         </form>
       </div>
     </div>
 
-    <div id="resultsArea">
-      {% for r in results %}
-        <div class="result-card">
-          <div class="d-flex justify-content-between">
-            <div>
-              <h5 class="mb-0">{{ r.name }}</h5>
-              <div class="meta">Score: {{ r.score }} • {{ r.score * 100 | round(0) }}%</div>
-            </div>
-            <div class="text-end">
-              <a class="btn btn-sm btn-outline-primary" href="/download/{{ r.index }}">Download</a>
-              {% if r.name.lower().endswith('.pdf') %}
-                <a class="btn btn-sm btn-outline-warning" href="/highlight/{{ r.index }}/{{ query | urlencode }}/{{ method }}">✨ Highlight & Download</a>
-              {% endif %}
-              <form method="POST" action="/export" style="display:inline;">
-                <input type="hidden" name="query" value="{{ query }}">
-                <input type="hidden" name="method" value="{{ method }}">
-                <input type="hidden" name="single" value="{{ r.index }}">
-                <button class="btn btn-sm btn-primary">📄 Export This Document</button>
-              </form>
-            </div>
-          </div>
-
-          <div class="snippet mt-2">{{ r.snippet | safe }}</div>
-
-          <div class="mt-3">
-            <div class="progress-bar"><div class="progress" style="width: {{ r.score * 100 }}%;"></div></div>
-          </div>
-
-          <div class="mt-2">
-            <a href="#" onclick="openKeywords({{ r.index }}); return false;">🔍 View TF–IDF Keywords</a>
+    {% for r in results %}
+    <div class="result-card">
+      <div class="result-left">
+        <h5 style="margin:0">{{ r.name }}</h5>
+        <div class="meta">Score: {{ r.score }} • {{ (r.score * 100)|round(0) }}%</div>
+        <div class="snippet">{{ r.snippet | safe }}</div>
+        <div class="kws">
+          <a href="#" class="view-kws" data-idx="{{ r.index }}">🔍 View TF–IDF keywords</a>
+          <div id="kws-{{ r.index }}" style="display:none;margin-top:8px;"></div>
+        </div>
+      </div>
+      <div class="result-right">
+        <div class="mb-2">
+          <a class="btn btn-outline-secondary btn-sm" href="/download/{{ r.index }}">Download</a>
+          {% if r.name.lower().endswith('.pdf') %}
+          <a class="btn btn-warning btn-sm" href="/highlight/{{ r.index }}/{{ query | urlencode }}/{{ method }}">✨ Highlight & Download</a>
+          {% endif %}
+        </div>
+        <div style="margin-top:10px">
+          <div class="progress-bar">
+            <div class="progress" style="width: {{ (r.score * 100)|round(0) }}%"></div>
           </div>
         </div>
-      {% endfor %}
+        <div class="meta" style="margin-top:8px">
+          <form method="POST" action="/export" style="display:inline;">
+            <input type="hidden" name="query" value="{{ query }}">
+            <input type="hidden" name="method" value="{{ method }}">
+            <input type="hidden" name="single" value="{{ r.index }}">
+            <button class="btn btn-primary btn-sm">📄 Export This</button>
+          </form>
+        </div>
+      </div>
     </div>
+    {% endfor %}
+  </div>
   {% endif %}
 
-  <div class="footer-small">DocVista — built for IR microproject • Multi-format • TF–IDF & BM25 • Export & PDF highlight</div>
-</div>
-
-<!-- Keyword modal -->
-<div id="modalBg" class="modal-bg d-flex">
-  <div class="modal-card">
-    <div class="d-flex justify-content-between align-items-start">
-      <h5>Top TF–IDF Keywords</h5>
-      <button class="btn btn-sm btn-outline-secondary" onclick="closeModal()">Close</button>
-    </div>
-    <ul id="keywordList" class="mt-2"></ul>
-  </div>
+  <div class="footer">DocVista · Built for IR projects — TF–IDF, BM25, export, highlight.</div>
 </div>
 
 <script>
-// theme
-const themeBtn = document.getElementById("themeToggle");
-const savedTheme = localStorage.getItem("docvista_theme") || "light";
-document.body.setAttribute("data-theme", savedTheme);
-themeBtn.textContent = savedTheme === "dark" ? "☀️" : "🌙";
-themeBtn.onclick = () => {
-  const cur = document.body.getAttribute("data-theme") || "light";
-  const nxt = cur === "dark" ? "light" : "dark";
-  document.body.setAttribute("data-theme", nxt);
-  themeBtn.textContent = nxt === "dark" ? "☀️" : "🌙";
-  localStorage.setItem("docvista_theme", nxt);
-};
-
-// clear
-document.getElementById("clearBtn").addEventListener("click", ()=>{
-  document.getElementById("queryInput").value = "";
-  document.getElementById("queryInput").focus();
+document.addEventListener('click', function(e){
+  if (e.target && e.target.classList.contains('view-kws')){
+    e.preventDefault();
+    const idx = e.target.dataset.idx;
+    const box = document.getElementById('kws-' + idx);
+    if (!box) return;
+    if (box.style.display === 'block') { box.style.display = 'none'; return; }
+    box.innerHTML = 'Loading...';
+    fetch('/keywords/' + idx).then(r => r.json()).then(js => {
+      if (Array.isArray(js)){
+        box.innerHTML = '<div style="padding:8px;background:#f7f9ff;border-radius:6px;">' + js.join(', ') + '</div>';
+      } else {
+        box.innerHTML = '<div style="color:#b00">Error fetching keywords</div>';
+      }
+      box.style.display = 'block';
+    }).catch(_=>{ box.innerHTML = '<div style="color:#b00">Error</div>'; box.style.display='block';});
+  }
 });
-
-// results animation
-window.addEventListener("DOMContentLoaded", ()=>{
-  document.querySelectorAll(".result-card").forEach((el,i)=>{
-    setTimeout(()=> el.classList.add("show"), i*120);
-  });
-});
-
-// search history
-function loadHistory(){
-  let h = JSON.parse(localStorage.getItem("docvista_history") || "[]");
-  const list = document.getElementById("historyList");
-  if (!list) return;
-  list.innerHTML = "";
-  h.slice(-10).reverse().forEach(q => { list.innerHTML += `<li>${q}</li>`; });
-}
-loadHistory();
-document.getElementById("searchForm").onsubmit = () => {
-  const q = document.getElementById("queryInput").value.trim();
-  if (!q) return;
-  let h = JSON.parse(localStorage.getItem("docvista_history") || "[]");
-  h.push(q);
-  h = [...new Set(h)]; // unique
-  if (h.length > 50) h = h.slice(-50);
-  localStorage.setItem("docvista_history", JSON.stringify(h));
-};
-
-// modal keywords
-function openKeywords(idx){
-  fetch(`/keywords/${idx}`).then(r => r.json()).then(data => {
-    const box = document.getElementById("keywordList");
-    box.innerHTML = "";
-    if (Array.isArray(data)){
-      data.forEach(k => box.innerHTML += `<li>${k}</li>`);
-    } else if (data.error){
-      box.innerHTML = `<li>Error: ${data.error}</li>`;
-    }
-    document.getElementById("modalBg").style.display = "flex";
-  });
-}
-function closeModal(){ document.getElementById("modalBg").style.display = "none"; }
 </script>
 </body>
 </html>
 """
 
 # ----------------------------
-# Routes
+# Instantiate engine before routes
 # ----------------------------
 engine = IREngine()
 
+# ----------------------------
+# Routes
+# ----------------------------
 @app.route("/", methods=["GET", "POST"])
 def home():
     results = None
     query = ""
     method = "tfidf"
     if request.method == "POST":
+        # upload handling: only when upload button submitted
+        if request.form.get("upload") == "1":
+            f = request.files.get("file")
+            if f:
+                fn = secure_filename(f.filename)
+                if fn and fn.lower().endswith(ALLOWED_EXT):
+                    path = os.path.join(DOCS_FOLDER, fn)
+                    f.save(path)
+                    engine.refresh()
+        # search handling (if query provided)
         query = request.form.get("query", "").strip()
         method = request.form.get("method", "tfidf")
         if query:
@@ -630,34 +656,19 @@ def refresh():
     engine.refresh()
     return redirect(url_for("home"))
 
-@app.route("/upload", methods=["POST"])
-def upload():
-    f = request.files.get("file")
-    if not f:
-        return "<h3>No file uploaded</h3><a href='/'>Back</a>"
-    filename = secure_filename(f.filename)
-    if not filename.lower().endswith(ALLOWED_EXT):
-        return "<h3>Only PDF, DOCX, TXT allowed</h3><a href='/'>Back</a>"
-    save_path = os.path.join(DOCS_FOLDER, filename)
-    f.save(save_path)
-    engine.refresh()
-    return f"<h3>Uploaded: {filename}</h3><a href='/'>Back to search</a>"
-
 @app.route("/download/<int:idx>")
 def download_doc(idx):
     if idx < 0 or idx >= len(engine.doc_paths):
         return "Invalid document", 404
     path = engine.doc_paths[idx]
     name = engine.doc_names[idx]
-    # If it's a PDF, send the original PDF file
     try:
         if path.lower().endswith(".pdf"):
             return send_file(path, as_attachment=True, download_name=name, mimetype="application/pdf")
         else:
-            # send as text file
-            text = engine.docs_raw[idx]
+            txt = engine.docs_raw[idx]
             buf = io.BytesIO()
-            buf.write(text.encode("utf-8", errors="ignore"))
+            buf.write(txt.encode("utf-8", errors="ignore"))
             buf.seek(0)
             return send_file(buf, as_attachment=True, download_name=f"{name}.txt", mimetype="text/plain")
     except Exception as e:
@@ -675,14 +686,13 @@ def keywords(idx):
 
 @app.route("/highlight/<int:idx>/<query>/<method>")
 def highlight_route(idx, query, method):
-    # idx - document index, query - urlencoded, method ignored here
     if idx < 0 or idx >= len(engine.doc_paths):
         return "Invalid document", 404
     path = engine.doc_paths[idx]
     if not path.lower().endswith(".pdf"):
         return "<h3>Highlighting only supported for PDF files.</h3><a href='/'>Back</a>"
-    query_decoded = unquote_plus(query)
-    q_tokens = normalize_for_index(preprocess(query_decoded)).split()
+    q = unquote_plus(query)
+    q_tokens = normalize_for_index(preprocess(q)).split()
     try:
         out_buf = highlight_pdf_bytes(path, q_tokens)
     except Exception as e:
@@ -697,7 +707,7 @@ def export_report_route():
     single = request.form.get("single", None)
     if not q:
         return redirect(url_for("home"))
-    if single is not None:
+    if single is not None and single != "":
         try:
             idx = int(single)
         except Exception:
@@ -713,12 +723,12 @@ def export_report_route():
 @app.route("/bm25")
 def bm25_info():
     html = """
-    <h2>BM25 — Explanation</h2>
-    <p>BM25 is a ranking function used in search engines. Formula:</p>
-    <pre>
-score(D,Q) = Σ idf(t) * (f(t,D) * (k1+1)) / (f(t,D) + k1*(1-b+b*|D|/avgdl))
-    </pre>
-    <a href="/">Back</a>
+    <div style="padding:20px;">
+      <h3>BM25 — Short Explanation</h3>
+      <p>BM25 is a widely used ranking function in information retrieval. Formula:</p>
+      <pre>score(D,Q) = Σ idf(t) * (f(t,D)*(k1+1)) / (f(t,D) + k1*(1-b+b*|D|/avgdl))</pre>
+      <a href="/">Back</a>
+    </div>
     """
     return html
 
@@ -727,5 +737,7 @@ score(D,Q) = Σ idf(t) * (f(t,D) * (k1+1)) / (f(t,D) + k1*(1-b+b*|D|/avgdl))
 # ----------------------------
 if __name__ == "__main__":
     print("Loading documents from:", os.path.abspath(DOCS_FOLDER))
-    print("Starting DocVista on http://127.0.0.1:5000")
+    print("Open http://127.0.0.1:5000")
+    # ensure engine exists and built
+    engine = IREngine()
     app.run(debug=True, port=5000)
