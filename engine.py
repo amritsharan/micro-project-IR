@@ -107,25 +107,52 @@ def filter_stopwords(tokens):
 # ----------------------------
 # Load documents
 # ----------------------------
-def load_documents(folder=DOCS_FOLDER):
+def load_documents(folder=DOCS_FOLDER, recursive=False):
+    """Load documents from a folder, optionally recursively"""
     docs_raw, names, paths = [], [], []
     os.makedirs(folder, exist_ok=True)
-    for fname in sorted(os.listdir(folder)):
-        if not fname.lower().endswith(ALLOWED_EXT):
-            continue
-        fp = os.path.join(folder, fname)
-        raw = ""
-        if fname.lower().endswith(".pdf"):
-            raw = extract_text_from_pdf(fp)
-        elif fname.lower().endswith(".docx"):
-            raw = extract_text_from_docx(fp)
-        else:
-            raw = extract_text_from_txt(fp)
-        raw = preprocess(raw)
-        if raw and len(raw) > 10:
-            docs_raw.append(raw)
-            names.append(fname)
-            paths.append(fp)
+    
+    if recursive:
+        # Recursively walk through subdirectories
+        for root, dirs, files in os.walk(folder):
+            for fname in sorted(files):
+                if not fname.lower().endswith(ALLOWED_EXT):
+                    continue
+                fp = os.path.join(root, fname)
+                raw = ""
+                if fname.lower().endswith(".pdf"):
+                    raw = extract_text_from_pdf(fp)
+                elif fname.lower().endswith(".docx"):
+                    raw = extract_text_from_docx(fp)
+                else:
+                    raw = extract_text_from_txt(fp)
+                raw = preprocess(raw)
+                if raw and len(raw) > 10:
+                    docs_raw.append(raw)
+                    # Store relative path for display
+                    rel_path = os.path.relpath(fp, folder)
+                    names.append(f"{rel_path} ({os.path.getsize(fp)} bytes)")
+                    paths.append(fp)
+    else:
+        # Only files in the direct folder
+        for fname in sorted(os.listdir(folder)):
+            if not fname.lower().endswith(ALLOWED_EXT):
+                continue
+            fp = os.path.join(folder, fname)
+            if not os.path.isfile(fp):
+                continue
+            raw = ""
+            if fname.lower().endswith(".pdf"):
+                raw = extract_text_from_pdf(fp)
+            elif fname.lower().endswith(".docx"):
+                raw = extract_text_from_docx(fp)
+            else:
+                raw = extract_text_from_txt(fp)
+            raw = preprocess(raw)
+            if raw and len(raw) > 10:
+                docs_raw.append(raw)
+                names.append(fname)
+                paths.append(fp)
     return docs_raw, names, paths
 
 # ----------------------------
@@ -171,7 +198,19 @@ class BM25Simple:
 class IREngine:
     def __init__(self):
         self.docs_raw, self.doc_names, self.doc_paths = load_documents(DOCS_FOLDER)
+        self.current_folder = DOCS_FOLDER
+        self.recursive = False
         self._build()
+
+    def load_from_folder(self, folder_path, recursive=False):
+        """Load documents from a specific folder"""
+        if os.path.isdir(folder_path):
+            self.current_folder = folder_path
+            self.recursive = recursive
+            self.docs_raw, self.doc_names, self.doc_paths = load_documents(folder_path, recursive=recursive)
+            self._build()
+            return True
+        return False
 
     def _build(self):
         self.vectorizer = TfidfVectorizer(stop_words="english")
@@ -186,7 +225,7 @@ class IREngine:
         self.bm25 = BM25Simple(self.docs_tokens) if self.docs_tokens else None
 
     def refresh(self):
-        self.docs_raw, self.doc_names, self.doc_paths = load_documents(DOCS_FOLDER)
+        self.docs_raw, self.doc_names, self.doc_paths = load_documents(self.current_folder, recursive=self.recursive)
         self._build()
 
     def search(self, query, method="tfidf", top_k=10):
@@ -1247,6 +1286,35 @@ body { padding: 24px 16px; }
     </form>
   </div>
 
+  <!-- FOLDER SELECTION CARD -->
+  <div class="search-card" style="margin-top: 20px;">
+    <div class="search-title">📁 Select Folder</div>
+    <form method="POST" action="/">
+      <div class="search-form" style="flex-wrap: wrap;">
+        <input 
+          type="text" 
+          name="folder_path" 
+          class="form-input" 
+          placeholder="Enter folder path (e.g., /home/user/documents or C:\Users\Documents)" 
+          value="{{ current_folder }}"
+          style="flex: 1; min-width: 250px;"
+        />
+        <label style="display: flex; align-items: center; gap: 8px; margin-top: 10px; flex: 1; min-width: 200px;">
+          <input type="checkbox" name="recursive" id="recursiveCheck" />
+          <span style="font-size: 14px; color: var(--text-secondary);">📂 Recursive (load subfolders)</span>
+        </label>
+        <button type="submit" name="folder_action" value="select" class="btn-search" style="margin-top: 10px;">
+          <i class="fas fa-folder-open"></i> Load Folder
+        </button>
+      </div>
+      {% if folder_status %}
+      <div style="margin-top: 12px; padding: 10px; border-radius: 4px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 13px;">
+        {{ folder_status }}
+      </div>
+      {% endif %}
+    </form>
+  </div>
+
   <!-- RESULTS -->
   {% if results %}
   <div class="results-header">
@@ -1427,22 +1495,45 @@ def home():
     results = None
     query = ""
     method = "tfidf"
+    folder_status = ""
     if request.method == "POST":
+        # folder selection handling
+        if request.form.get("folder_action") == "select":
+            folder_path = request.form.get("folder_path", "").strip()
+            recursive = request.form.get("recursive") == "on"
+            if folder_path and os.path.isdir(folder_path):
+                if engine.load_from_folder(folder_path, recursive=recursive):
+                    folder_status = f"✅ Loaded from: {folder_path} ({'recursive' if recursive else 'direct'})"
+                else:
+                    folder_status = f"❌ Failed to load from: {folder_path}"
+            else:
+                folder_status = f"❌ Invalid folder path: {folder_path}"
+        
         # upload handling: only when upload button submitted
         if request.form.get("upload") == "1":
             f = request.files.get("file")
             if f:
                 fn = secure_filename(f.filename)
                 if fn and fn.lower().endswith(ALLOWED_EXT):
-                    path = os.path.join(DOCS_FOLDER, fn)
+                    path = os.path.join(engine.current_folder, fn)
                     f.save(path)
                     engine.refresh()
+        
         # search handling (if query provided)
         query = request.form.get("query", "").strip()
         method = request.form.get("method", "tfidf")
         if query:
             results = engine.search(query, method=method, top_k=20)
-    return render_template_string(BASE_HTML, results=results, n_docs=len(engine.doc_names), query=query, method=method)
+    
+    return render_template_string(
+        BASE_HTML, 
+        results=results, 
+        n_docs=len(engine.doc_names), 
+        query=query, 
+        method=method,
+        current_folder=engine.current_folder,
+        folder_status=folder_status
+    )
 
 @app.route("/refresh")
 def refresh():
