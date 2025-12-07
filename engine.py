@@ -1288,25 +1288,52 @@ body { padding: 24px 16px; }
 
   <!-- FOLDER SELECTION CARD -->
   <div class="search-card" style="margin-top: 20px;">
-    <div class="search-title">📁 Select Folder</div>
-    <form method="POST" action="/">
+    <div class="search-title">📁 Select Folder from Computer</div>
+    <form method="POST" action="/" id="folderForm">
       <div class="search-form" style="flex-wrap: wrap;">
+        <!-- Hidden input for folder browser -->
+        <input 
+          type="file" 
+          id="folderBrowser" 
+          name="folder_files" 
+          webkitdirectory 
+          mozdirectory 
+          directory 
+          multiple 
+          style="display: none;"
+        />
+        
+        <!-- Display selected folder path -->
         <input 
           type="text" 
           name="folder_path" 
           class="form-input" 
-          placeholder="Enter folder path (e.g., /home/user/documents or C:\Users\Documents)" 
+          id="folderPathDisplay"
+          placeholder="Click 'Browse Folder' or enter path manually" 
           value="{{ current_folder }}"
           style="flex: 1; min-width: 250px;"
         />
+        
+        <!-- Browse button -->
+        <button 
+          type="button" 
+          id="browseFolderBtn" 
+          class="btn-search" 
+          style="margin-top: 10px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);"
+        >
+          <i class="fas fa-folder"></i> Browse Folder
+        </button>
+        
         <label style="display: flex; align-items: center; gap: 8px; margin-top: 10px; flex: 1; min-width: 200px;">
           <input type="checkbox" name="recursive" id="recursiveCheck" />
           <span style="font-size: 14px; color: var(--text-secondary);">📂 Recursive (load subfolders)</span>
         </label>
+        
         <button type="submit" name="folder_action" value="select" class="btn-search" style="margin-top: 10px;">
-          <i class="fas fa-folder-open"></i> Load Folder
+          <i class="fas fa-check"></i> Load Selected Folder
         </button>
       </div>
+      <input type="hidden" name="selected_folder_path" id="selectedFolderPath" value="" />
       {% if folder_status %}
       <div style="margin-top: 12px; padding: 10px; border-radius: 4px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 13px;">
         {{ folder_status }}
@@ -1476,6 +1503,61 @@ fileInput?.addEventListener('change', function() {
     label.style.color = '#10b981';
   }
 });
+
+// Folder Browser Handler
+const browseFolderBtn = document.getElementById('browseFolderBtn');
+const folderBrowser = document.getElementById('folderBrowser');
+const folderPathDisplay = document.getElementById('folderPathDisplay');
+const selectedFolderPath = document.getElementById('selectedFolderPath');
+
+browseFolderBtn?.addEventListener('click', function(e) {
+  e.preventDefault();
+  folderBrowser.click();
+});
+
+folderBrowser?.addEventListener('change', function(e) {
+  if (this.files && this.files.length > 0) {
+    // Get the common folder path from the first file (webkitRelativePath includes folder)
+    const firstFilePath = this.files[0].webkitRelativePath || this.files[0].name;
+    const pathParts = firstFilePath.split('/');
+    const folderName = pathParts[0];
+    
+    // Update display with folder name and file count
+    folderPathDisplay.value = folderName;
+    selectedFolderPath.value = folderName;
+    
+    // Visual feedback - show selection was successful
+    folderPathDisplay.style.color = '#10b981';
+    folderPathDisplay.style.borderColor = '#10b981';
+    folderPathDisplay.style.background = 'rgba(16, 185, 129, 0.1)';
+    browseFolderBtn.style.background = 'linear-gradient(135deg, #34d399 0%, #10b981 100%)';
+    browseFolderBtn.style.color = 'white';
+    browseFolderBtn.textContent = '✅ Folder selected';
+    
+    // Reset button text after 2 seconds
+    setTimeout(() => {
+      browseFolderBtn.innerHTML = '<i class="fas fa-folder"></i> Browse Folder';
+      browseFolderBtn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+      browseFolderBtn.style.color = '';
+    }, 2000);
+    
+    console.log('Folder selected:', folderName, 'with', this.files.length, 'files');
+  }
+});
+
+// Form submission handler - prepare folder path from browser selection
+const folderForm = document.getElementById('folderForm');
+folderForm?.addEventListener('submit', function(e) {
+  // If files were selected via browser, use the browser-selected folder
+  if (folderBrowser.files && folderBrowser.files.length > 0) {
+    const firstPath = folderBrowser.files[0].webkitRelativePath || '';
+    if (firstPath) {
+      const rootFolder = firstPath.split('/')[0];
+      document.querySelector('input[name="folder_path"]').value = rootFolder;
+    }
+  }
+  // Otherwise, the manually typed folder_path will be used
+});
 </script>
 
 </body>
@@ -1501,9 +1583,12 @@ def home():
         if request.form.get("folder_action") == "select":
             folder_path = request.form.get("folder_path", "").strip()
             recursive = request.form.get("recursive") == "on"
+            
             if folder_path and os.path.isdir(folder_path):
                 if engine.load_from_folder(folder_path, recursive=recursive):
-                    folder_status = f"✅ Loaded from: {folder_path} ({'recursive' if recursive else 'direct'})"
+                    num_docs = len(engine.doc_names)
+                    doc_text = "document" if num_docs == 1 else "documents"
+                    folder_status = f"✅ Loaded from: {folder_path} ({num_docs} {doc_text}, {'recursive' if recursive else 'direct'})"
                 else:
                     folder_status = f"❌ Failed to load from: {folder_path}"
             else:
