@@ -1248,10 +1248,12 @@ body { padding: 24px 16px; }
     </div>
   </div>
 
-  <!-- SEARCH CARD -->
-  <div class="search-card">
-    <div class="search-title">🔎 Search Documents</div>
-    <form id="searchForm" method="POST" action="/" enctype="multipart/form-data">
+  <!-- MAIN UNIFIED FORM -->
+  <form id="mainForm" method="POST" action="/" enctype="multipart/form-data">
+    
+    <!-- SEARCH CARD -->
+    <div class="search-card">
+      <div class="search-title">🔎 Search Documents</div>
       <div class="search-form">
         <input 
           type="text" 
@@ -1259,7 +1261,6 @@ body { padding: 24px 16px; }
           name="query" 
           class="form-input" 
           placeholder="Search your documents — try 'deadlock', 'cpu', or any keyword..." 
-          required 
         />
         <select name="method" class="form-select" title="Choose ranking algorithm">
           <option value="tfidf">TF–IDF</option>
@@ -1283,13 +1284,11 @@ body { padding: 24px 16px; }
       <div class="upload-hint">
         <i class="fas fa-info-circle"></i> Supported formats: PDF, DOCX, TXT • Or drop files in <code>/documents</code> folder
       </div>
-    </form>
-  </div>
+    </div>
 
-  <!-- FOLDER SELECTION CARD -->
-  <div class="search-card" style="margin-top: 20px;">
-    <div class="search-title">📁 Select Folder & Search</div>
-    <form method="POST" action="/" id="folderForm">
+    <!-- FOLDER SELECTION CARD -->
+    <div class="search-card" style="margin-top: 20px;">
+      <div class="search-title">📁 Select Folder & Search</div>
       <div class="search-form" style="flex-wrap: wrap;">
         <!-- Folder path input field -->
         <input 
@@ -1333,8 +1332,9 @@ body { padding: 24px 16px; }
         {{ folder_status }}
       </div>
       {% endif %}
-    </form>
-  </div>
+    </div>
+
+  </form>
 
   <!-- RESULTS -->
   {% if results %}
@@ -1500,7 +1500,7 @@ fileInput?.addEventListener('change', function() {
 
 // Folder path input validation and handling
 const folderPathDisplay = document.getElementById('folderPathDisplay');
-const folderForm = document.getElementById('folderForm');
+const mainForm = document.getElementById('mainForm');
 
 folderPathDisplay?.addEventListener('focus', function() {
   this.style.borderColor = '#667eea';
@@ -1509,32 +1509,6 @@ folderPathDisplay?.addEventListener('focus', function() {
 folderPathDisplay?.addEventListener('blur', function() {
   if (this.value.trim()) {
     this.style.borderColor = 'var(--border-color)';
-  }
-});
-
-// Form submission validation
-folderForm?.addEventListener('submit', function(e) {
-  const folderPath = folderPathDisplay.value.trim();
-  
-  if (!folderPath) {
-    e.preventDefault();
-    alert('❌ Please enter a folder path');
-    folderPathDisplay.focus();
-    return false;
-  }
-  
-  // Show loading state
-  const submitBtn = this.querySelector('button[type="submit"]');
-  if (submitBtn) {
-    const originalText = submitBtn.innerHTML;
-    submitBtn.disabled = true;
-    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
-    
-    // Re-enable after a moment
-    setTimeout(() => {
-      submitBtn.disabled = false;
-      submitBtn.innerHTML = originalText;
-    }, 2000);
   }
 });
 </script>
