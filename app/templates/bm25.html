@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>BM25 Algorithm — DocVista</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+* {margin:0;padding:0;box-sizing:border-box;}
+:root {
+  --primary: #3956ff;
+  --primary-dark: #1e3a8a;
+  --secondary: #f59e0b;
+  --success: #10b981;
+  --danger: #ef4444;
+  --light-bg: #f8fafc;
+  --card-bg: #ffffff;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --border-color: #e2e8f0;
+  --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.12);
+  --shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.15);
+}
+[data-theme="dark"] {
+  --light-bg: #0f172a;
+  --card-bg: #1e293b;
+  --text-primary: #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --border-color: #334155;
+}
+html, body {
+  background: var(--light-bg);
+  color: var(--text-primary);
+  transition: background-color 0.3s ease, color 0.3s ease;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+  line-height: 1.6;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+body { padding: 24px 16px; }
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 32px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 14px;
+  transition: all 0.3s ease;
+}
+.back-btn:hover {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+  gap: 12px;
+}
+.theme-toggle {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.3s ease;
+}
+.theme-toggle:hover {
+  background: var(--light-bg);
+  border-color: var(--primary);
+}
+.title {
+  font-size: 32px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.subtitle {
+  font-size: 14px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.content {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 28px;
+  box-shadow: var(--shadow-md);
+  transition: all 0.3s ease;
+}
+.card:hover {
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-2px);
+}
+.card-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-primary);
+}
+.card-title i {
+  color: var(--primary);
+}
+.card-text {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+.formula-box {
+  background: linear-gradient(135deg, rgba(57, 86, 255, 0.05), rgba(245, 158, 11, 0.05));
+  border: 1px solid rgba(57, 86, 255, 0.2);
+  border-radius: 10px;
+  padding: 20px;
+  margin: 16px 0;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 13px;
+  overflow-x: auto;
+  line-height: 1.8;
+  color: var(--primary);
+}
+.param-list {
+  list-style: none;
+  margin: 12px 0;
+}
+.param-list li {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.param-list li:last-child {
+  border-bottom: none;
+}
+.param-label {
+  font-weight: 600;
+  color: var(--primary);
+  min-width: 60px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 13px;
+}
+.param-desc {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.comparison {
+  background: var(--light-bg);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 16px 0;
+}
+.comparison-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid var(--border-color);
+}
+.comparison-row:last-child {
+  border-bottom: none;
+}
+.comparison-cell {
+  padding: 14px;
+  font-size: 13px;
+}
+.comparison-cell:first-child {
+  background: rgba(57, 86, 255, 0.05);
+  font-weight: 600;
+  color: var(--primary);
+  border-right: 1px solid var(--border-color);
+}
+.feature-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0;
+}
+.feature-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  background: var(--light-bg);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.feature-item i {
+  color: var(--success);
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+.footer {
+  margin-top: 48px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border-color);
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.footer strong {
+  color: var(--text-primary);
+}
+@media (max-width: 768px) {
+  .content {
+    grid-template-columns: 1fr;
+  }
+  .comparison-row {
+    grid-template-columns: 1fr;
+  }
+  .comparison-cell:first-child {
+    border-right: none;
+    border-bottom: 1px solid var(--border-color);
+  }
+  .title {
+    font-size: 24px;
+  }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div>
+      <h1 class="title">BM25 Algorithm</h1>
+      <p class="subtitle">Probabilistic Ranking Function for Information Retrieval</p>
+    </div>
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">🌙</button>
+      <a href="/" class="back-btn"><i class="fas fa-arrow-left"></i> Back to Search</a>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="card">
+      <h2 class="card-title">
+        <i class="fas fa-book"></i> What is BM25?
+      </h2>
+      <p class="card-text">
+        BM25 (Best Match 25) is a probabilistic ranking function widely used in modern search engines and information retrieval systems. It combines term frequency, inverse document frequency, and document length normalization to produce highly relevant search results.
+      </p>
+      <p class="card-text">
+        BM25 is considered superior to traditional TF-IDF because it accounts for document length saturation, preventing long documents from dominating results.
+      </p>
+      <div class="feature-list">
+        <div class="feature-item">
+          <i class="fas fa-check-circle"></i>
+          <span><strong>Probabilistic:</strong> Based on probability theory and information retrieval models</span>
+        </div>
+        <div class="feature-item">
+          <i class="fas fa-check-circle"></i>
+          <span><strong>Length-aware:</strong> Normalizes scores based on document length</span>
+        </div>
+        <div class="feature-item">
+          <i class="fas fa-check-circle"></i>
+          <span><strong>Tunable:</strong> Configurable parameters for different use cases</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">
+        <i class="fas fa-calculator"></i> The Formula
+      </h2>
+      <div class="formula-box">
+score(D,Q) = Σ IDF(q)<br>
+· (f(q,D) · (k₁ + 1))<br>
+────────────────────<br>
+f(q,D) + k₁(1 - b<br>
++ b · |D| / avgdl)
+      </div>
+      <p class="card-text" style="margin-top: 16px; font-size: 12px;">
+        Where each term in the query contributes to the total relevance score based on its frequency in the document and across the corpus.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">
+        <i class="fas fa-sliders-h"></i> Parameters
+      </h2>
+      <ul class="param-list">
+        <li>
+          <span class="param-label">IDF(q)</span>
+          <span class="param-desc">Inverse Document Frequency of query term — measures rarity across corpus</span>
+        </li>
+        <li>
+          <span class="param-label">f(q,D)</span>
+          <span class="param-desc">Term frequency of query term in document D</span>
+        </li>
+        <li>
+          <span class="param-label">|D|</span>
+          <span class="param-desc">Length of document D (in words/tokens)</span>
+        </li>
+        <li>
+          <span class="param-label">avgdl</span>
+          <span class="param-desc">Average document length in the entire corpus</span>
+        </li>
+        <li>
+          <span class="param-label">k₁</span>
+          <span class="param-desc">Controls term frequency saturation (default: 1.5)</span>
+        </li>
+        <li>
+          <span class="param-label">b</span>
+          <span class="param-desc">Controls length normalization (0.0 = none, 1.0 = full)</span>
+        </li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">
+        <i class="fas fa-scale-balanced"></i> BM25 vs TF-IDF
+      </h2>
+      <div class="comparison">
+        <div class="comparison-row">
+          <div class="comparison-cell">Aspect</div>
+          <div class="comparison-cell">BM25 / TF-IDF</div>
+        </div>
+        <div class="comparison-row">
+          <div class="comparison-cell">Term Frequency</div>
+          <div class="comparison-cell">Saturates (diminishing returns)</div>
+        </div>
+        <div class="comparison-row">
+          <div class="comparison-cell">Length Normalization</div>
+          <div class="comparison-cell">Advanced tuning / Simple</div>
+        </div>
+        <div class="comparison-row">
+          <div class="comparison-cell">Document Length Bias</div>
+          <div class="comparison-cell">Minimal / Prone to long docs</div>
+        </div>
+        <div class="comparison-row">
+          <div class="comparison-cell">Ranking Quality</div>
+          <div class="comparison-cell">Superior / Good baseline</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">
+        <i class="fas fa-lightbulb"></i> Use Cases
+      </h2>
+      <div class="feature-list">
+        <div class="feature-item">
+          <i class="fas fa-search"></i>
+          <span>Web search engines (Google, Bing use variants)</span>
+        </div>
+        <div class="feature-item">
+          <i class="fas fa-search"></i>
+          <span>Enterprise full-text search (Elasticsearch, Solr)</span>
+        </div>
+        <div class="feature-item">
+          <i class="fas fa-search"></i>
+          <span>Document retrieval systems</span>
+        </div>
+        <div class="feature-item">
+          <i class="fas fa-search"></i>
+          <span>Question answering systems</span>
+        </div>
+        <div class="feature-item">
+          <i class="fas fa-search"></i>
+          <span>Academic paper ranking</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">
+        <i class="fas fa-wrench"></i> Parameter Tuning
+      </h2>
+      <p class="card-text">
+        <strong>k₁ (1.5 default):</strong> Higher values increase term frequency impact. Range: 0.5-3.0
+      </p>
+      <p class="card-text">
+        <strong>b (0.75 default):</strong> Controls length normalization strength. 0 = off, 1 = full
+      </p>
+      <p class="card-text">
+        For short texts like tweets: Lower k₁ (0.9) and higher b (0.8)
+      </p>
+      <p class="card-text">
+        For long documents: Higher k₁ (2.0) and lower b (0.3)
+      </p>
+    </div>
+  </div>
+
+  <div class="footer">
+    <strong>DocVista</strong> · BM25 Education Center
+    <br>
+    Learn more about advanced information retrieval ranking algorithms
+  </div>
+</div>
+
+<script>
+const themeToggle = document.getElementById('themeToggle');
+const htmlElement = document.documentElement;
+
+function initTheme() {
+  const stored = localStorage.getItem('docvista-theme');
+  const prefer = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const isDark = stored ? stored === 'dark' : prefer;
+  applyTheme(isDark);
+}
+
+function applyTheme(isDark) {
+  if (isDark) {
+    htmlElement.setAttribute('data-theme', 'dark');
+    themeToggle.textContent = '☀️';
+    localStorage.setItem('docvista-theme', 'dark');
+  } else {
+    htmlElement.removeAttribute('data-theme');
+    themeToggle.textContent = '🌙';
+    localStorage.setItem('docvista-theme', 'light');
+  }
+}
+
+themeToggle.addEventListener('click', () => {
+  const isDark = htmlElement.getAttribute('data-theme') === 'dark';
+  applyTheme(!isDark);
+});
+
+initTheme();
+</script>
+</body>
+</html>

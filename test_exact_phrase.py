@@ -4,6 +4,12 @@ Test script for exact phrase matching feature
 Tests both regular tokenized queries and exact phrase queries with quotes
 """
 
+import sys
+import os
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 from engine import IREngine
 
 def test_exact_phrase_matching():

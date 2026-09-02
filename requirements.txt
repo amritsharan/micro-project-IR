@@ -2,6 +2,7 @@ Flask
 scikit-learn
 rank-bm25
 python-docx
-PyPDF2
+pypdf
 fpdf2
 PyMuPDF==1.23.7
+sentence-transformers

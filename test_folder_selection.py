@@ -4,8 +4,13 @@ Test script for folder selection feature
 Tests loading documents from different folders with recursive option
 """
 
+import sys
 import os
 import tempfile
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 from engine import IREngine
 
 def create_test_structure():
